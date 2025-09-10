@@ -66,8 +66,8 @@ You can extend these mappings in `extension.js` if your monitor uses different i
 - “Command not found: ddcutil”: Install `ddcutil` via your distro and ensure it’s in `PATH`.
 - “No displays detected”: Ensure monitors support DDC/CI and that the feature is enabled in the OSD; check user permissions to I²C devices.
 
-## Licensing
-- GPL‑2.0‑or‑later (see SPDX header in source). If distributing widely, consider adding a `LICENSE` file with full text.
+## Acknowledgments
+- Uses the excellent `ddcutil` utility to communicate with monitors over DDC/CI https://github.com/rockowitz/ddcutil
 
 ## Publishing Checklist (GNOME Extensions)
 - metadata.json
