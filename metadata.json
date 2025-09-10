@@ -1,0 +1,8 @@
+{
+  "name": "Display Input Switcher",
+  "description": "Swithc input for your displays",
+  "uuid": "display-swithcer@skandinaff.github.com",
+  "shell-version": [
+    "46"
+  ]
+}
