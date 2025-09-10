@@ -1,8 +1,7 @@
 {
-  "name": "Display Input Switcher",
-  "description": "Swithc input for your displays",
-  "uuid": "display-swithcer@skandinaff.github.com",
-  "shell-version": [
-    "46"
-  ]
+  "uuid": "display-switcher@skandinaff.github.com",
+  "name": "Display Switch",
+  "description": "Switch monitor input sources using ddcutil",
+  "shell-version": ["46"],
+  "version": 1
 }
