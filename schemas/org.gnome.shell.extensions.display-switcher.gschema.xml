@@ -14,7 +14,7 @@
       <description>
         A mapping from a monitor key to a position string. Keys are derived
         as 'sn:SERIAL' when available, otherwise 'model:MODEL|id:ID'. Values are
-        lowercase strings like 'left' or 'right'. Unknown/cleared positions should
+        lowercase strings like 'left', 'center' (or 'centre'), or 'right'. Unknown/cleared positions should
         be removed from the mapping.
       </description>
     </key>

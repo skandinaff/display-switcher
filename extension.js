@@ -82,8 +82,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
 
         const list = [...this._displays];
-        // Sort: left -> right -> unknown, then by id
-        const rank = p => (p === 'left' ? 0 : (p === 'right' ? 1 : 2));
+        // Sort: left -> center -> right -> unknown, then by id
+        const rank = p => (p === 'left' ? 0 : (p === 'center' ? 1 : (p === 'right' ? 2 : 3)));
         list.sort((a, b) => (rank(a.position) - rank(b.position)) || (a.id - b.id));
 
         for (const d of list) {
@@ -234,10 +234,16 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         const pos = this._loadPositions();
         for (const d of displays) {
             const key = this._monitorKey(d);
-            const p = (pos[key] || '').toLowerCase();
-            d.position = (p === 'left' || p === 'right') ? p : undefined;
-            if (d.labelBase)
-                d.label = d.labelBase + (d.position ? ` (${d.position === 'left' ? _('Left') : _('Right')})` : '');
+            let p = (pos[key] || '').toLowerCase();
+            if (p === 'centre') p = 'center'; // accept British spelling
+            d.position = (p === 'left' || p === 'center' || p === 'right') ? p : undefined;
+            if (d.labelBase) {
+                let posLabel = '';
+                if (d.position === 'left') posLabel = _('Left');
+                else if (d.position === 'center') posLabel = _('Center');
+                else if (d.position === 'right') posLabel = _('Right');
+                d.label = d.labelBase + (posLabel ? ` (${posLabel})` : '');
+            }
         }
     }
 

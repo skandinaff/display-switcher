@@ -8,7 +8,7 @@ Switch monitor input sources directly from the GNOME top bar using `ddcutil` (VC
 - Parses monitor Model and Serial (when available)
 - Auto‑disambiguates identical models (e.g., “DELL P2721Q (1)”, “(2)”) 
 - Persists detected monitors to settings (optional schema)
-- Preferences dialog to assign monitors as Left/Right
+- Preferences dialog to assign monitors as Left/Center/Right
 - Rescan displays without reloading the extension
 - Translatable labels via gettext
 
@@ -35,10 +35,10 @@ Switch monitor input sources directly from the GNOME top bar using `ddcutil` (VC
 
 Labels use the monitor model from `ddcutil detect` if present. If two or more displays report the same model, they are enumerated “(1)”, “(2)”, etc. Serial number is read when available and stored in settings if the schema is compiled.
 
-## Preferences (Left/Right assignment)
+## Preferences (Position assignment)
 - Open the Extensions app, select Display Switch, and click Preferences.
-- Assign each detected monitor to “Left” or “Right” (or keep “Unknown”).
-- The menu will annotate labels with the assignment and sort Left → Right → Unknown.
+- Assign each detected monitor to “Left”, “Center”, or “Right” (or keep “Unknown”).
+- The menu annotates labels with the assignment and sorts Left → Center → Right → Unknown.
 - Assignments are stored by serial number when available; otherwise by model+id.
 
 VCP values used:

@@ -70,7 +70,8 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         }
 
         // Build a row per monitor with a dropdown for position
-        const options = [_('Unknown'), _('Left'), _('Right')];
+        // Order: Unknown, Left, Center, Right
+        const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
 
         for (const mon of monitors) {
             const row = new Adw.ActionRow();
@@ -88,21 +89,25 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             drop.valign = Gtk.Align.CENTER;
 
             const key = monitorKeyFor(mon);
-            const current = (positions[key] || '').toLowerCase();
+            let current = (positions[key] || '').toLowerCase();
+            if (current === 'centre') current = 'center';
             let idx = 0; // Unknown
             if (current === 'left') idx = 1;
-            else if (current === 'right') idx = 2;
+            else if (current === 'center') idx = 2;
+            else if (current === 'right') idx = 3;
             drop.selected = idx;
 
             drop.connect('notify::selected', () => {
                 const sel = drop.selected;
-                // Update mapping: 0 -> remove, 1 -> left, 2 -> right
+                // Update mapping: 0 -> remove, 1 -> left, 2 -> center, 3 -> right
                 positions = loadPositions(settings); // refresh in case changed externally
                 if (sel === 0) {
                     if (positions[key]) delete positions[key];
                 } else if (sel === 1) {
                     positions[key] = 'left';
                 } else if (sel === 2) {
+                    positions[key] = 'center';
+                } else if (sel === 3) {
                     positions[key] = 'right';
                 }
                 savePositions(settings, positions);
@@ -115,4 +120,3 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         window.add(page);
     }
 }
-
