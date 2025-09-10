@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.display-switcher" path="/org/gnome/shell/extensions/display-switcher/">
+    <key name="monitors" type="as">
+      <default>[]</default>
+      <summary>Detected monitors</summary>
+      <description>
+        List of detected monitors as JSON strings with fields: id, model, serial.
+      </description>
+    </key>
+    <key name="positions" type="a{ss}">
+      <default>{}</default>
+      <summary>Assigned positions for monitors</summary>
+      <description>
+        A mapping from a monitor key to a position string. Keys are derived
+        as 'sn:SERIAL' when available, otherwise 'model:MODEL|id:ID'. Values are
+        lowercase strings like 'left' or 'right'. Unknown/cleared positions should
+        be removed from the mapping.
+      </description>
+    </key>
+  </schema>
+  
+</schemalist>

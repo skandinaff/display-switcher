@@ -30,7 +30,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
 class DisplaySwitchIndicator extends PanelMenu.Button {
-    _init() {
+    _init(settings) {
         super._init(0.0, _('Display Switch'));
 
         // Panel icon
@@ -39,8 +39,24 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             style_class: 'system-status-icon',
         }));
 
+        this._settings = settings || null;
+
         this._displays = this._detectDisplays();
+        if (this._settings) {
+            this._settingsChangedId = this._settings.connect('changed::positions', () => {
+                this._relabelDisplays();
+                this._buildMenu();
+            });
+        }
         this._buildMenu();
+    }
+
+    destroy() {
+        if (this._settings && this._settingsChangedId) {
+            try { this._settings.disconnect(this._settingsChangedId); } catch (_e) {}
+            this._settingsChangedId = 0;
+        }
+        super.destroy();
     }
 
     _clearMenu() {
@@ -49,6 +65,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     _buildMenu() {
         this._clearMenu();
+
+        // Refresh labels with position tags if any
+        this._relabelDisplays();
 
         // Submenu: All monitors
         const allSub = new PopupMenu.PopupSubMenuMenuItem(_('All Monitors'));
@@ -62,11 +81,17 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         }
 
-        for (const d of this._displays) {
-            const sub = new PopupMenu.PopupSubMenuMenuItem(_('Display ') + d);
-            sub.menu.addAction(_('Switch to HDMI-1'), () => this._switchOne('0x11', d));
-            sub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchOne('0x0f', d));
-            sub.menu.addAction(_('Switch to USB-C'), () => this._switchOne('0x1b', d));
+        const list = [...this._displays];
+        // Sort: left -> right -> unknown, then by id
+        const rank = p => (p === 'left' ? 0 : (p === 'right' ? 1 : 2));
+        list.sort((a, b) => (rank(a.position) - rank(b.position)) || (a.id - b.id));
+
+        for (const d of list) {
+            const label = d.label || `${_('Display')} ${d.id}`;
+            const sub = new PopupMenu.PopupSubMenuMenuItem(label);
+            sub.menu.addAction(_('Switch to HDMI-1'), () => this._switchOne('0x11', d.id));
+            sub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchOne('0x0f', d.id));
+            sub.menu.addAction(_('Switch to USB-C'), () => this._switchOne('0x1b', d.id));
             this.menu.addMenuItem(sub);
         }
 
@@ -85,7 +110,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             return;
         }
         for (const d of this._displays) {
-            this._runSetVcp(vcpValue, d);
+            this._runSetVcp(vcpValue, d.id ?? d);
         }
     }
 
@@ -103,32 +128,148 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _detectDisplays() {
         try {
             const proc = Gio.Subprocess.new(
-                ['ddcutil', 'detect', '--terse'],
+                ['ddcutil', 'detect'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
 
-            const [, stdout, stderr] = proc.communicate_utf8(null, null);
+            const [, stdout, _stderr] = proc.communicate_utf8(null, null);
             if (!proc.get_successful())
                 return [];
 
             const text = stdout || '';
-            // Parse lines like: "Display 1"
             const displays = [];
-            for (const line of text.split('\n')) {
-                const m = line.match(/^Display\s+(\d+)/);
-                if (m) displays.push(parseInt(m[1], 10));
+            let current = null;
+
+            for (const rawLine of text.split('\n')) {
+                const line = rawLine.trimEnd();
+                const mDisp = line.match(/^Display\s+(\d+)/);
+                if (mDisp) {
+                    if (current) displays.push(current);
+                    current = { id: parseInt(mDisp[1], 10), model: null, serial: null };
+                    continue;
+                }
+                if (!current)
+                    continue;
+
+                const mModel = line.match(/^\s*Model:\s*(.+)$/);
+                if (mModel && !current.model) {
+                    current.model = mModel[1].trim();
+                    continue;
+                }
+                const mSN = line.match(/^\s*(?:Serial number|SN):\s*(.+)$/);
+                if (mSN && !current.serial) {
+                    current.serial = mSN[1].trim();
+                    continue;
+                }
             }
+            if (current)
+                displays.push(current);
+
+            // Fallback: if nothing parsed (e.g. different formatting), try terse to get ids
+            if (displays.length === 0) {
+                const procTerse = Gio.Subprocess.new(
+                    ['ddcutil', 'detect', '--terse'],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+                );
+                const [, stdoutT, _stderrT] = procTerse.communicate_utf8(null, null);
+                if (procTerse.get_successful()) {
+                    const ids = [];
+                    for (const line of (stdoutT || '').split('\n')) {
+                        const m = line.match(/^Display\s+(\d+)/);
+                        if (m) ids.push(parseInt(m[1], 10));
+                    }
+                    for (const id of ids)
+                        displays.push({ id, model: null, serial: null });
+                }
+            }
+
+            // Compute labels; disambiguate duplicate models
+            const byModel = new Map();
+            for (const d of displays) {
+                const model = d.model && d.model.length > 0 ? d.model : _('Display') + ' ' + d.id;
+                if (!byModel.has(model)) byModel.set(model, []);
+                byModel.get(model).push(d);
+            }
+            for (const [model, list] of byModel.entries()) {
+                if (list.length === 1) {
+                    list[0].labelBase = model;
+                    list[0].label = model;
+                } else {
+                    list.sort((a, b) => a.id - b.id);
+                    list.forEach((d, idx) => {
+                        d.labelBase = `${model} (${idx + 1})`;
+                        d.label = d.labelBase;
+                    });
+                }
+            }
+
+            // Apply position tags (from settings) and persist to settings if available
+            this._persistMonitors(displays);
+            this._applyPositions(displays);
+
             return displays;
         } catch (e) {
-            // If detection fails, return empty list
             return [];
+        }
+    }
+
+    _monitorKey(d) {
+        if (d.serial && d.serial.length > 0)
+            return `sn:${d.serial}`;
+        const model = d.model || '';
+        return `model:${model}|id:${d.id}`;
+    }
+
+    _loadPositions() {
+        if (!this._settings)
+            return {};
+        try {
+            return this._settings.get_value('positions').deepUnpack();
+        } catch (_e) {
+            return {};
+        }
+    }
+
+    _applyPositions(displays) {
+        const pos = this._loadPositions();
+        for (const d of displays) {
+            const key = this._monitorKey(d);
+            const p = (pos[key] || '').toLowerCase();
+            d.position = (p === 'left' || p === 'right') ? p : undefined;
+            if (d.labelBase)
+                d.label = d.labelBase + (d.position ? ` (${d.position === 'left' ? _('Left') : _('Right')})` : '');
+        }
+    }
+
+    _relabelDisplays() {
+        if (!this._displays || this._displays.length === 0)
+            return;
+        this._applyPositions(this._displays);
+    }
+
+    _persistMonitors(displays) {
+        if (!this._settings)
+            return;
+        try {
+            // Store as array of JSON strings for flexibility
+            const arr = displays.map(d => JSON.stringify({ id: d.id, model: d.model || '', serial: d.serial || '' }));
+            this._settings.set_strv('monitors', arr);
+        } catch (_e) {
+            // Silently ignore if schema missing or not compiled
         }
     }
 });
 
 export default class DisplaySwitchExtension extends Extension {
     enable() {
-        this._indicator = new DisplaySwitchIndicator();
+        let settings = null;
+        try {
+            // Will work only if schema is present/compiled
+            settings = this.getSettings();
+        } catch (_e) {
+            settings = null;
+        }
+        this._indicator = new DisplaySwitchIndicator(settings);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 

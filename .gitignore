@@ -1,0 +1,3 @@
+# Ignore compiled GSettings cache; include it only in release zips
+schemas/gschemas.compiled
+
