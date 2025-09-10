@@ -81,5 +81,3 @@ You can extend these mappings in `extension.js` if your monitor uses different i
   - No GTK/Adwaita imports in `extension.js`; no Shell libraries in preferences (no prefs used)
   - No excessive logging or telemetry
   - No bundled binaries or scripts
-
-Repository: https://github.com/skandinaff/display-switcher
