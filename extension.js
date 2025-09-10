@@ -19,6 +19,7 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -38,21 +39,90 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             style_class: 'system-status-icon',
         }));
 
-        // HDMI-1 action
-        const hdmiItem = new PopupMenu.PopupMenuItem(_('Switch to HDMI-1'));
-        hdmiItem.connect('activate', () => {
-            // VCP code 0x60 (Input Select), value 0x11 (HDMI-1)
-            GLib.spawn_command_line_async('ddcutil setvcp 60 0x11');
-        });
-        this.menu.addMenuItem(hdmiItem);
+        this._displays = this._detectDisplays();
+        this._buildMenu();
+    }
 
-        // DisplayPort-1 action
-        const dpItem = new PopupMenu.PopupMenuItem(_('Switch to DisplayPort-1'));
-        dpItem.connect('activate', () => {
-            // VCP code 0x60 (Input Select), value 0x0f (DisplayPort-1)
-            GLib.spawn_command_line_async('ddcutil setvcp 60 0x0f');
+    _clearMenu() {
+        this.menu.removeAll();
+    }
+
+    _buildMenu() {
+        this._clearMenu();
+
+        // Submenu: All monitors
+        const allSub = new PopupMenu.PopupSubMenuMenuItem(_('All Monitors'));
+        allSub.menu.addAction(_('Switch to HDMI-1'), () => this._switchAll('0x11'));
+        allSub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchAll('0x0f'));
+        allSub.menu.addAction(_('Switch to USB-C'), () => this._switchAll('0x1b'));
+        this.menu.addMenuItem(allSub);
+
+        // Per-display submenus
+        if (this._displays.length > 0) {
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        }
+
+        for (const d of this._displays) {
+            const sub = new PopupMenu.PopupSubMenuMenuItem(_('Display ') + d);
+            sub.menu.addAction(_('Switch to HDMI-1'), () => this._switchOne('0x11', d));
+            sub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchOne('0x0f', d));
+            sub.menu.addAction(_('Switch to USB-C'), () => this._switchOne('0x1b', d));
+            this.menu.addMenuItem(sub);
+        }
+
+        // Rescan displays
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this.menu.addAction(_('Rescan Displays'), () => {
+            this._displays = this._detectDisplays();
+            this._buildMenu();
         });
-        this.menu.addMenuItem(dpItem);
+    }
+
+    _switchAll(vcpValue) {
+        if (this._displays.length === 0) {
+            // Fallback: run without specifying display
+            GLib.spawn_command_line_async(`ddcutil setvcp 60 ${vcpValue}`);
+            return;
+        }
+        for (const d of this._displays) {
+            this._runSetVcp(vcpValue, d);
+        }
+    }
+
+    _switchOne(vcpValue, display) {
+        this._runSetVcp(vcpValue, display);
+    }
+
+    _runSetVcp(vcpValue, display) {
+        // VCP code 0x60 (Input Select)
+        // Examples: 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
+        const cmd = `ddcutil -d ${display} setvcp 60 ${vcpValue}`;
+        GLib.spawn_command_line_async(cmd);
+    }
+
+    _detectDisplays() {
+        try {
+            const proc = Gio.Subprocess.new(
+                ['ddcutil', 'detect', '--terse'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            );
+
+            const [, stdout, stderr] = proc.communicate_utf8(null, null);
+            if (!proc.get_successful())
+                return [];
+
+            const text = stdout || '';
+            // Parse lines like: "Display 1"
+            const displays = [];
+            for (const line of text.split('\n')) {
+                const m = line.match(/^Display\s+(\d+)/);
+                if (m) displays.push(parseInt(m[1], 10));
+            }
+            return displays;
+        } catch (e) {
+            // If detection fails, return empty list
+            return [];
+        }
     }
 });
 
