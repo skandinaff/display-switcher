@@ -14,10 +14,12 @@ This file tracks planned work and staged delivery for the “active connection�
 4) Wiring: update checkmarks based on detection results; update after switching or rescan.
 5) Polishing: radio-style selection per submenu; error states; optional refresh button per display.
 
-## Current Milestone (Stage 1)
-- Implement static checkmarks on the first item of each per-display submenu (e.g., “Switch to HDMI-1”).
-- Purpose: validate visuals, spacing, and alignment for the eventual dynamic indicator.
-- Scope: UI-only; no detection or state updates yet.
+## Current Milestone (Stage 5)
+- Polishing and UX refinements:
+  - Radio-style selection per submenu is in place; review consistency.
+  - Add subtle error/unknown states in UI when detection fails.
+  - Consider an optional per-display "Refresh status" action.
+  - Final pass on wording, ordering, and accessibility.
 
 ## Notes / Considerations
 - Use `PopupMenu.PopupMenuItem` with `setOrnament(PopupMenu.Ornament.CHECK)` to show a checkmark without a switch.
@@ -28,6 +30,9 @@ This file tracks planned work and staged delivery for the “active connection�
 ## Done
 - Initial scan of extension structure and menu composition.
 - Stage 1 implemented: checkmarks on first item in each display submenu.
+- Stage 2 implemented: state model, input map, and menu references; no UI behavior changes yet.
+- Stage 3 implemented: async detection with timeout, per-display serialization, and triggers on submenu open/rescan; state updated only.
+- Stage 4 implemented: wire ornaments (DOT) to detected state; update selection after detection, switching, and rescans.
 
 ## Next-Session Handoff — Details
 - **Input map:** Define a canonical map of VCP values → labels:
