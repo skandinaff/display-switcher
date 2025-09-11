@@ -89,9 +89,19 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         for (const d of list) {
             const label = d.label || `${_('Display')} ${d.id}`;
             const sub = new PopupMenu.PopupSubMenuMenuItem(label);
-            sub.menu.addAction(_('Switch to HDMI-1'), () => this._switchOne('0x11', d.id));
+
+            // Frontend placeholder: show a checkmark on the first item
+            // Use a regular item with a CHECK ornament for compatibility
+            const itemHdmi = new PopupMenu.PopupMenuItem(_('Switch to HDMI-1'));
+            if (itemHdmi.setOrnament)
+                itemHdmi.setOrnament(PopupMenu.Ornament.CHECK);
+            itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
+            sub.menu.addMenuItem(itemHdmi);
+
+            // Remaining actions unchanged (no checkmarks yet)
             sub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchOne('0x0f', d.id));
             sub.menu.addAction(_('Switch to USB-C'), () => this._switchOne('0x1b', d.id));
+
             this.menu.addMenuItem(sub);
         }
 
