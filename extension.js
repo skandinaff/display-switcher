@@ -27,6 +27,16 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+// Canonical mapping of input codes (VCP 0x60) to labels
+// Extendable in later stages if needed
+const INPUT_MAP = Object.freeze({
+    '0x11': 'HDMI-1',
+    '0x0f': 'DisplayPort-1',
+    '0x1b': 'USB-C',
+});
+
+const INPUT_CODES = Object.freeze(['0x11', '0x0f', '0x1b']);
+
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
 class DisplaySwitchIndicator extends PanelMenu.Button {
@@ -40,6 +50,13 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }));
 
         this._settings = settings || null;
+
+        // Stage 2: in-memory model for per-display input state
+        // Keyed by stable monitor key; value: { currentInput: string|null, lastCheckedAt: number|null }
+        this._displayState = new Map();
+        // Keep references to per-display submenu and items for future updates without rebuilding
+        // Map: key -> { submenu, items: { '0x11': item, '0x0f': item, '0x1b': item } }
+        this._menuRefs = new Map();
 
         this._displays = this._detectDisplays();
         if (this._settings) {
@@ -61,6 +78,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     _clearMenu() {
         this.menu.removeAll();
+        this._menuRefs.clear();
     }
 
     _buildMenu() {
@@ -89,6 +107,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         for (const d of list) {
             const label = d.label || `${_('Display')} ${d.id}`;
             const sub = new PopupMenu.PopupSubMenuMenuItem(label);
+            const key = this._stableMonitorKey(d);
+
+            // Ensure state entry exists for this display
+            if (!this._displayState.has(key))
+                this._displayState.set(key, { currentInput: null, lastCheckedAt: null });
 
             // Frontend placeholder: show a checkmark on the first item
             // Use a regular item with a CHECK ornament for compatibility
@@ -98,9 +121,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
             sub.menu.addMenuItem(itemHdmi);
 
-            // Remaining actions unchanged (no checkmarks yet)
-            sub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchOne('0x0f', d.id));
-            sub.menu.addAction(_('Switch to USB-C'), () => this._switchOne('0x1b', d.id));
+            // Remaining actions unchanged (no checkmarks yet), but use PopupMenuItem
+            // so we can reference them later when wiring detection.
+            const itemDp = new PopupMenu.PopupMenuItem(_('Switch to DisplayPort-1'));
+            itemDp.connect('activate', () => this._switchOne('0x0f', d.id));
+            sub.menu.addMenuItem(itemDp);
+
+            const itemUsbC = new PopupMenu.PopupMenuItem(_('Switch to USB-C'));
+            itemUsbC.connect('activate', () => this._switchOne('0x1b', d.id));
+            sub.menu.addMenuItem(itemUsbC);
+
+            // Store references for future ornament updates
+            this._menuRefs.set(key, { submenu: sub, items: { '0x11': itemHdmi, '0x0f': itemDp, '0x1b': itemUsbC } });
 
             this.menu.addMenuItem(sub);
         }
@@ -217,9 +249,50 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._persistMonitors(displays);
             this._applyPositions(displays);
 
+            // Stage 2: reconcile state entries with detected displays
+            const keys = new Set(displays.map(d => this._stableMonitorKey(d)));
+            // Remove state for displays no longer present
+            for (const k of Array.from(this._displayState.keys())) {
+                if (!keys.has(k))
+                    this._displayState.delete(k);
+            }
+            // Ensure state exists for current displays
+            for (const d of displays) {
+                const k = this._stableMonitorKey(d);
+                if (!this._displayState.has(k))
+                    this._displayState.set(k, { currentInput: null, lastCheckedAt: null });
+            }
+
             return displays;
         } catch (e) {
             return [];
+        }
+    }
+
+    // Stage 2 helper: provide a stable key for state bookkeeping
+    _stableMonitorKey(d) {
+        return this._monitorKey(d);
+    }
+
+    // Stage 2: placeholder for detection; to be implemented in Stage 3
+    async _readInputOne(_displayId) {
+        return null;
+    }
+
+    // Stage 2: update radio/check ornaments for a display submenu based on value
+    // Will be used in Stage 4; safe no-op if items not found
+    _updateDisplayMenuChecksByKey(key, valueHex) {
+        const ref = this._menuRefs.get(key);
+        if (!ref || !ref.items)
+            return;
+        for (const code of INPUT_CODES) {
+            const item = ref.items[code];
+            if (!item || !item.setOrnament)
+                continue;
+            if (valueHex && code.toLowerCase() === String(valueHex).toLowerCase())
+                item.setOrnament(PopupMenu.Ornament.DOT);
+            else
+                item.setOrnament(PopupMenu.Ornament.NONE);
         }
     }
 
