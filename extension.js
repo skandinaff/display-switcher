@@ -57,6 +57,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Keep references to per-display submenu and items for future updates without rebuilding
         // Map: key -> { submenu, items: { '0x11': item, '0x0f': item, '0x1b': item } }
         this._menuRefs = new Map();
+        // Track in-flight detection per display key to avoid overlap
+        this._detectInflight = new Map();
 
         this._displays = this._detectDisplays();
         if (this._settings) {
@@ -113,11 +115,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             if (!this._displayState.has(key))
                 this._displayState.set(key, { currentInput: null, lastCheckedAt: null });
 
-            // Frontend placeholder: show a checkmark on the first item
-            // Use a regular item with a CHECK ornament for compatibility
+            // Stage 4: all items start with no ornament; selection will be wired
+            // to detection/state using DOT (radio-style) updates.
             const itemHdmi = new PopupMenu.PopupMenuItem(_('Switch to HDMI-1'));
-            if (itemHdmi.setOrnament)
-                itemHdmi.setOrnament(PopupMenu.Ornament.CHECK);
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
             sub.menu.addMenuItem(itemHdmi);
 
@@ -134,6 +134,22 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             // Store references for future ornament updates
             this._menuRefs.set(key, { submenu: sub, items: { '0x11': itemHdmi, '0x0f': itemDp, '0x1b': itemUsbC } });
 
+            // Detection trigger: when submenu opens, refresh state for that display and update UI
+            sub.menu.connect('open-state-changed', (menu, isOpen) => {
+                if (isOpen) {
+                    this._detectAndStore(d.id, key)
+                        .then(() => {
+                            const st = this._displayState.get(key);
+                            this._updateDisplayMenuChecksByKey(key, st ? st.currentInput : null);
+                        })
+                        .catch(() => {});
+                }
+            });
+
+            // Initialize ornaments from any existing state
+            const st0 = this._displayState.get(key);
+            this._updateDisplayMenuChecksByKey(key, st0 ? st0.currentInput : null);
+
             this.menu.addMenuItem(sub);
         }
 
@@ -142,6 +158,16 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this.menu.addAction(_('Rescan Displays'), () => {
             this._displays = this._detectDisplays();
             this._buildMenu();
+            // After rebuild, trigger detection for each display to populate state and update UI
+            for (const d of this._displays) {
+                const k = this._stableMonitorKey(d);
+                this._detectAndStore(d.id, k)
+                    .then(() => {
+                        const st = this._displayState.get(k);
+                        this._updateDisplayMenuChecksByKey(k, st ? st.currentInput : null);
+                    })
+                    .catch(() => {});
+            }
         });
     }
 
@@ -153,11 +179,28 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
         for (const d of this._displays) {
             this._runSetVcp(vcpValue, d.id ?? d);
+            // Optimistically update state/UI for each display
+            const key = this._stableMonitorKey(d);
+            const state = this._displayState.get(key) || { currentInput: null, lastCheckedAt: null };
+            state.currentInput = vcpValue;
+            state.lastCheckedAt = Date.now();
+            this._displayState.set(key, state);
+            this._updateDisplayMenuChecksByKey(key, vcpValue);
         }
     }
 
     _switchOne(vcpValue, display) {
         this._runSetVcp(vcpValue, display);
+        // Optimistically update state/UI for the target display
+        const d = (this._displays || []).find(x => x.id === display);
+        if (d) {
+            const key = this._stableMonitorKey(d);
+            const state = this._displayState.get(key) || { currentInput: null, lastCheckedAt: null };
+            state.currentInput = vcpValue;
+            state.lastCheckedAt = Date.now();
+            this._displayState.set(key, state);
+            this._updateDisplayMenuChecksByKey(key, vcpValue);
+        }
     }
 
     _runSetVcp(vcpValue, display) {
@@ -274,9 +317,106 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         return this._monitorKey(d);
     }
 
-    // Stage 2: placeholder for detection; to be implemented in Stage 3
-    async _readInputOne(_displayId) {
+    // Stage 3: read current input for a single display via ddcutil getvcp 60
+    async _readInputOne(displayId) {
+        const args = ['ddcutil', '-d', String(displayId), 'getvcp', '60'];
+        const { ok, stdout } = await this._runCommand(args, 2500);
+        if (!ok)
+            return null;
+
+        // Example output:
+        //   VCP code 0x60 (Input Source) current value = 0x0f, max value = 0x1b
+        // or sometimes decimal, so parse both
+        const text = stdout || '';
+        const m = text.match(/current\s+value\s*=\s*(0x[0-9a-fA-F]+|\d+)/);
+        if (!m)
+            return null;
+        let code = m[1];
+        if (/^\d+$/.test(code)) {
+            const n = parseInt(code, 10);
+            if (Number.isFinite(n)) {
+                code = '0x' + n.toString(16).padStart(2, '0');
+            }
+        }
+        code = String(code).toLowerCase();
+        // Normalize to known keys if possible
+        if (INPUT_MAP[code])
+            return code;
+        // Unknown code but keep normalized 0x.. format
+        if (/^0x[0-9a-f]+$/.test(code))
+            return code;
         return null;
+    }
+
+    // Run a command with timeout; returns { ok, stdout, stderr, status }
+    _runCommand(argv, timeoutMs) {
+        return new Promise((resolve) => {
+            let timedOut = false;
+            let timeoutId = 0;
+            let proc = null;
+            try {
+                proc = Gio.Subprocess.new(
+                    argv,
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+                );
+            } catch (_e) {
+                resolve({ ok: false, stdout: '', stderr: '', status: -1 });
+                return;
+            }
+
+            const onFinish = (p, res) => {
+                if (timeoutId) {
+                    GLib.source_remove(timeoutId);
+                    timeoutId = 0;
+                }
+                if (timedOut) {
+                    resolve({ ok: false, stdout: '', stderr: '', status: -2 });
+                    return;
+                }
+                try {
+                    const [ok, stdout, stderr] = p.communicate_utf8_finish(res);
+                    const success = ok && p.get_successful();
+                    resolve({ ok: !!success, stdout: stdout || '', stderr: stderr || '', status: success ? 0 : 1 });
+                } catch (_e) {
+                    resolve({ ok: false, stdout: '', stderr: '', status: -3 });
+                }
+            };
+
+            proc.communicate_utf8_async(null, null, onFinish);
+
+            timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.max(100, timeoutMs | 0), () => {
+                timedOut = true;
+                try { proc.force_exit(); } catch (_e) {}
+                // Let onFinish resolve; if not called, resolve here after a tick
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    resolve({ ok: false, stdout: '', stderr: 'timeout', status: -2 });
+                    return GLib.SOURCE_REMOVE;
+                });
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+    }
+
+    // Stage 3: helper to serialize detection per display key and store result
+    async _detectAndStore(displayId, key) {
+        if (this._detectInflight.has(key))
+            return this._detectInflight.get(key);
+        const run = (async () => {
+            try {
+                const val = await this._readInputOne(displayId);
+                const state = this._displayState.get(key) || { currentInput: null, lastCheckedAt: null };
+                // If detection fails (e.g., display switched to another host),
+                // keep the last known selection instead of clearing the ornament.
+                if (val !== null)
+                    state.currentInput = val;
+                state.lastCheckedAt = Date.now();
+                this._displayState.set(key, state);
+            } finally {
+                this._detectInflight.delete(key);
+            }
+        })();
+        this._detectInflight.set(key, run);
+        return run;
     }
 
     // Stage 2: update radio/check ornaments for a display submenu based on value
