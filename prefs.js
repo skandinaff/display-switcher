@@ -33,7 +33,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
 
         const page = new Adw.PreferencesPage({ title: _('Display Switcher') });
-        const group = new Adw.PreferencesGroup({ title: _('Monitor Positions') });
+        const group = new Adw.PreferencesGroup({ title: _('Monitors') });
         page.add(group);
 
         let monitors = loadMonitors(settings);
@@ -49,17 +49,26 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             return;
         }
 
-        // Build a row per monitor with a dropdown for position
-        // Order: Unknown, Left, Center, Right
+        // Build a row per monitor with inline ID, position dropdown, and usable inputs dropdown
+        // Order for position: Unknown, Left, Center, Right
         const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
+        const INPUT_LABELS = new Map([
+            ['0x11', _('HDMI-1')],
+            ['0x0f', _('DisplayPort-1')],
+            ['0x1b', _('USB-C')],
+        ]);
+        const ALL_CODES = ['0x11', '0x0f', '0x1b'];
 
         for (const mon of monitors) {
             const row = new Adw.ActionRow();
 
             const title = mon.model && mon.model.length > 0 ? mon.model : `${_('Display')} ${mon.id}`;
             row.title = title;
+            const subtitleBits = [];
             if (mon.serial && mon.serial.length > 0)
-                row.subtitle = _('Serial: ') + mon.serial;
+                subtitleBits.push(_('Serial: ') + mon.serial);
+            subtitleBits.push(_('ID: ') + String(mon.id));
+            row.subtitle = subtitleBits.join('  •  ');
 
             const strList = new Gtk.StringList();
             for (const o of options)
@@ -99,75 +108,91 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             });
 
             row.add_suffix(drop);
-            group.add(row);
-        }
+            // Usable inputs dropdown with checkmarks (popover menu)
+            const inputsButton = new Gtk.MenuButton();
+            inputsButton.valign = Gtk.Align.CENTER;
 
-        // Usable inputs per monitor
-        const groupInputs = new Adw.PreferencesGroup({ title: _('Usable Inputs') });
-        page.add(groupInputs);
-
-        for (const mon of monitors) {
-            const row = new Adw.ActionRow();
-
-            const title = mon.model && mon.model.length > 0 ? mon.model : `${_('Display')} ${mon.id}`;
-            row.title = title;
-            if (mon.serial && mon.serial.length > 0)
-                row.subtitle = _('Select inputs that are connected.');
-
-            const box = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 8 });
-
-            // Helper to read/update the list safely
-            const getUsable = () => {
+            const buttonLabel = new Gtk.Label({ xalign: 0.5 });
+            const refreshButtonLabel = () => {
                 const fresh = loadMonitors(settings);
                 let target = fresh.find(m => m && m.id === mon.id);
                 if (!target && mon.serial)
                     target = fresh.find(m => m && m.serial === mon.serial);
-                if (!target)
-                    return { fresh, target: null, list: [] };
-                const lst = Array.isArray(target.usableInputs) ? target.usableInputs.slice() : [];
-                return { fresh, target, list: lst };
+                const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                const effective = (list && list.length > 0) ? list : ALL_CODES;
+                const text = effective.map(c => INPUT_LABELS.get(c) || c).join(', ');
+                buttonLabel.label = text.length > 0 ? text : _('All');
+            };
+            refreshButtonLabel();
+
+            inputsButton.set_child(buttonLabel);
+
+            const popover = new Gtk.Popover();
+            const listBox = new Gtk.ListBox();
+            listBox.selection_mode = Gtk.SelectionMode.NONE;
+            popover.set_child(listBox);
+
+            const buildRow = (code) => {
+                const lb = new Gtk.ListBoxRow();
+                const h = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 8, margin_start: 10, margin_end: 10, margin_top: 6, margin_bottom: 6 });
+                const lbl = new Gtk.Label({ label: INPUT_LABELS.get(code) || code, xalign: 0 });
+                const check = new Gtk.Image({ icon_name: 'emblem-ok-symbolic', visible: false });
+                h.append(lbl);
+                h.append(new Gtk.Box({ hexpand: true }));
+                h.append(check);
+                lb.set_child(h);
+
+                const isChecked = () => {
+                    const fresh = loadMonitors(settings);
+                    let target = fresh.find(m => m && m.id === mon.id);
+                    if (!target && mon.serial)
+                        target = fresh.find(m => m && m.serial === mon.serial);
+                    const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                    if (!list || list.length === 0) // empty means all enabled
+                        return true;
+                    return list.includes(code);
+                };
+
+                const updateVisual = () => {
+                    check.visible = isChecked();
+                };
+                updateVisual();
+
+                const toggle = () => {
+                    const fresh = loadMonitors(settings);
+                    let target = fresh.find(m => m && m.id === mon.id);
+                    if (!target && mon.serial)
+                        target = fresh.find(m => m && m.serial === mon.serial);
+                    if (!target)
+                        return;
+                    const list = Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                    const idx = list.indexOf(code);
+                    // Toggle: if currently included, remove; else add
+                    if (idx >= 0)
+                        list.splice(idx, 1);
+                    else
+                        list.push(code);
+                    target.usableInputs = list;
+                    saveMonitors(settings, fresh);
+                    updateVisual();
+                    refreshButtonLabel();
+                };
+
+                // Support keyboard activation
+                lb.connect('activate', () => toggle());
+                // Make mouse clicks toggle too when selection is NONE
+                const click = new Gtk.GestureClick();
+                click.connect('released', () => toggle());
+                lb.add_controller(click);
+                return lb;
             };
 
-            const setChecked = (code, checked) => {
-                const { fresh, target, list } = getUsable();
-                if (!target)
-                    return;
-                const norm = String(code).toLowerCase();
-                const idx = list.findIndex(v => String(v).toLowerCase() === norm);
-                if (checked && idx === -1) list.push(norm);
-                if (!checked && idx !== -1) list.splice(idx, 1);
-                target.usableInputs = list;
-                saveMonitors(settings, fresh);
-            };
+            for (const code of ALL_CODES)
+                listBox.append(buildRow(code));
 
-            // Default behavior: if no list set, treat as all enabled
-            const initial = Array.isArray(mon.usableInputs) ? mon.usableInputs.map(v => String(v).toLowerCase()) : null;
-            const isInitiallyChecked = code => {
-                if (!initial || initial.length === 0)
-                    return true;
-                return initial.includes(String(code).toLowerCase());
-            };
-
-            const cbHdmi = new Gtk.CheckButton({ label: _('HDMI-1') });
-            cbHdmi.valign = Gtk.Align.CENTER;
-            cbHdmi.active = isInitiallyChecked('0x11');
-            cbHdmi.connect('toggled', () => setChecked('0x11', cbHdmi.active));
-            box.append(cbHdmi);
-
-            const cbDp = new Gtk.CheckButton({ label: _('DisplayPort-1') });
-            cbDp.valign = Gtk.Align.CENTER;
-            cbDp.active = isInitiallyChecked('0x0f');
-            cbDp.connect('toggled', () => setChecked('0x0f', cbDp.active));
-            box.append(cbDp);
-
-            const cbUsbC = new Gtk.CheckButton({ label: _('USB-C') });
-            cbUsbC.valign = Gtk.Align.CENTER;
-            cbUsbC.active = isInitiallyChecked('0x1b');
-            cbUsbC.connect('toggled', () => setChecked('0x1b', cbUsbC.active));
-            box.append(cbUsbC);
-
-            row.add_suffix(box);
-            groupInputs.add(row);
+            inputsButton.popover = popover;
+            row.add_suffix(inputsButton);
+            group.add(row);
         }
 
         window.add(page);

@@ -146,8 +146,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     }
 
     _runSetVcp(vcpValue, display) {
-        // VCP code 0x60 (Input Select)
-        // Examples: 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
         const cmd = `ddcutil -d ${display} setvcp 60 ${vcpValue}`;
         GLib.spawn_command_line_async(cmd);
     }
