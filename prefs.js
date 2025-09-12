@@ -39,12 +39,15 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         let monitors = loadMonitors(settings);
 
         if (monitors.length === 0) {
-            const status = new Adw.StatusPage({
-                title: _('No monitors stored yet'),
-                description: _('Open the menu and run “Rescan Displays” to detect monitors, then reopen preferences.'),
-                icon_name: 'video-display-symbolic',
+            // PreferencesWindow accepts only Adw.PreferencesPage children.
+            // Show an informational row instead of adding Adw.StatusPage directly.
+            const emptyRow = new Adw.ActionRow({
+                title: _('No monitors detected yet'),
+                subtitle: _('Open the menu and run “Rescan Displays” to detect monitors, then reopen preferences.'),
             });
-            window.add(status);
+            const icon = new Gtk.Image({ icon_name: 'video-display-symbolic' });
+            emptyRow.add_prefix(icon);
+            group.add(emptyRow);
             window.add(page);
             return;
         }
