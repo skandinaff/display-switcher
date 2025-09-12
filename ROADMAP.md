@@ -14,12 +14,10 @@ This file tracks planned work and staged delivery for the “active connection�
 4) Wiring: update checkmarks based on detection results; update after switching or rescan.
 5) Polishing: radio-style selection per submenu; error states; optional refresh button per display.
 
-## Current Milestone (Stage 5)
-- Polishing and UX refinements:
-  - Radio-style selection per submenu is in place; review consistency.
-  - Add subtle error/unknown states in UI when detection fails.
-  - Consider an optional per-display "Refresh status" action.
-  - Final pass on wording, ordering, and accessibility.
+## Current Milestone (Stage 1 — rollback)
+- Reverted detection wiring and radio ornaments.
+- Static checkmark on first item in each per-display submenu.
+- Added minimal read-only "Active Inputs" section that reads and shows the current input per display on menu open or manual refresh.
 
 ## Notes / Considerations
 - Use `PopupMenu.PopupMenuItem` with `setOrnament(PopupMenu.Ornament.CHECK)` to show a checkmark without a switch.
