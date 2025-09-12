@@ -55,7 +55,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Map: key -> PopupMenuItem
         this._statusItems = new Map();
 
+        this._lastInputs = {};
         this._displays = this._detectDisplays();
+        this._lastInputs = this._loadLastInputs();
         if (this._settings) {
             this._settingsChangedId = this._settings.connect('changed::positions', () => {
                 this._relabelDisplays();
@@ -97,8 +99,14 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
             for (const d of list) {
                 const label = d.label || `${_('Display')} ${d.id}`;
-                const item = new PopupMenu.PopupMenuItem(`${label}: ${_('Unknown')}`, { reactive: false });
                 const key = this._stableMonitorKey(d);
+                const initial = this._lastInputs[key];
+                let text = `${label}: ${_('Unknown')}`;
+                if (initial) {
+                    const friendly = INPUT_MAP[initial];
+                    text = friendly ? `${label}: ${friendly}` : `${label}: ${initial}`;
+                }
+                const item = new PopupMenu.PopupMenuItem(text, { reactive: false });
                 this._statusItems.set(key, item);
                 this.menu.addMenuItem(item);
             }
@@ -170,12 +178,20 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             GLib.spawn_command_line_async(`ddcutil setvcp 60 ${vcpValue}`);
             return;
         }
-        for (const d of this._displays)
+        for (const d of this._displays) {
             this._runSetVcp(vcpValue, d.id ?? d);
+            const key = this._stableMonitorKey(d);
+            this._updateLastInput(key, vcpValue);
+        }
     }
 
     _switchOne(vcpValue, display) {
         this._runSetVcp(vcpValue, display);
+        const d = this._displays.find(x => x.id === display);
+        if (d) {
+            const key = this._stableMonitorKey(d);
+            this._updateLastInput(key, vcpValue);
+        }
     }
 
     _runSetVcp(vcpValue, display) {
@@ -281,14 +297,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     // Read current input for a single display via ddcutil getvcp 60
     async _readInputOne(displayId) {
         const args = ['ddcutil', '-d', String(displayId), 'getvcp', '60'];
-        const { ok, stdout } = await this._runCommand(args, 2500);
+        // ddcutil can take 1–3s; allow generous timeout
+        const { ok, stdout } = await this._runCommand(args, 5000);
         if (!ok)
             return { code: null, raw: '' };
         const text = stdout || '';
         const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
         const rawLine = lines.find(l => /VCP code\s*0x?60/i.test(l)) || lines[0] || '';
-        const m = text.match(/current\s+value\s*=\s*(0x[0-9a-fA-F]+|\d+)/);
+        // Prefer parsing the explicit current value; fall back to sl= token
         let code = null;
+        let m = text.match(/current\s+value\s*=\s*(0x[0-9a-fA-F]+|\d+)/i);
+        if (!m)
+            m = text.match(/\bsl\s*=\s*(0x[0-9a-fA-F]+|\d+)/i);
         if (m) {
             code = m[1];
             if (/^\d+$/.test(code)) {
@@ -352,29 +372,30 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     // Refresh the read-only Active Inputs section
     async _refreshActiveInputs() {
-        const updates = [];
+        // Run sequentially to avoid I2C contention and allow slow monitors
         for (const d of this._displays) {
             const key = this._stableMonitorKey(d);
             const item = this._statusItems.get(key);
             if (!item)
                 continue;
-            updates.push((async () => {
-                let text = `${d.label || (_('Display') + ' ' + d.id)}: ${_('Unknown')}`;
-                try {
-                    const res = await this._readInputOne(d.id);
-                    if (res) {
-                        if (res.raw && res.raw.length > 0) {
-                            // Fallback: show raw ddcutil output line
-                            text = `${d.label || (_('Display') + ' ' + d.id)}: ${res.raw}`;
-                        }
-                    }
-                } catch (_e) {
-                    // keep Unknown
+            const displayName = d.label || (_('Display') + ' ' + d.id);
+            // Show a transient reading state to avoid flicker to Unknown
+            item.label.text = `${displayName}: ${_('Reading…')}`;
+            try {
+                const res = await this._readInputOne(d.id);
+                if (res && res.code) {
+                    const friendly = INPUT_MAP[res.code];
+                    item.label.text = friendly ? `${displayName}: ${friendly}` : `${displayName}: ${res.code}`;
+                    this._updateLastInput(key, res.code);
+                } else if (res && res.raw && res.raw.length > 0) {
+                    item.label.text = `${displayName}: ${res.raw}`;
+                } else {
+                    // Keep previous text on empty read; avoid reverting to Unknown
                 }
-                item.label.text = text;
-            })());
+            } catch (_e) {
+                // Keep previous text on read error
+            }
         }
-        await Promise.allSettled(updates);
     }
 
     _monitorKey(d) {
@@ -391,6 +412,35 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             return this._settings.get_value('positions').deepUnpack();
         } catch (_e) {
             return {};
+        }
+    }
+
+    _loadLastInputs() {
+        if (!this._settings)
+            return {};
+        try {
+            return this._settings.get_value('last-inputs').deepUnpack();
+        } catch (_e) {
+            return {};
+        }
+    }
+
+    _updateLastInput(key, vcpCode) {
+        if (!key || !vcpCode)
+            return;
+        // Normalize numeric to hex 0x.. just in case
+        let code = String(vcpCode).toLowerCase();
+        if (/^\d+$/.test(code)) {
+            const n = parseInt(code, 10);
+            if (Number.isFinite(n))
+                code = '0x' + n.toString(16).padStart(2, '0');
+        }
+        this._lastInputs[key] = code;
+        if (this._settings) {
+            try {
+                const variant = new GLib.Variant('a{ss}', this._lastInputs);
+                this._settings.set_value('last-inputs', variant);
+            } catch (_e) {}
         }
     }
 

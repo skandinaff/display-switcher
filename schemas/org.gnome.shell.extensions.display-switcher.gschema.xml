@@ -18,6 +18,16 @@
         be removed from the mapping.
       </description>
     </key>
+    <key name="last-inputs" type="a{ss}">
+      <default>{}</default>
+      <summary>Last known active input per monitor</summary>
+      <description>
+        A mapping from a monitor key to the last known VCP 0x60 value
+        (e.g. '0x11', '0x0f', '0x1b'). Used to populate the menu instantly and
+        persist state across restarts. Updated on successful reads or when the
+        user triggers a switch.
+      </description>
+    </key>
   </schema>
   
 </schemalist>
