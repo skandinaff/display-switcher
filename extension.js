@@ -40,7 +40,7 @@ const INPUT_CODES = Object.freeze(['0x11', '0x0f', '0x1b']);
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
 class DisplaySwitchIndicator extends PanelMenu.Button {
-    _init(settings) {
+    _init(settings, extension) {
         super._init(0.0, _('Display Switch'));
 
         // Panel icon
@@ -50,6 +50,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }));
 
         this._settings = settings || null;
+        this._extension = extension || null;
         // Status label items per display for read-only active input section
         // Map: key -> PopupMenuItem
         this._statusItems = new Map();
@@ -149,13 +150,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(sub);
         }
 
-        // Rescan displays
+        // Rescan displays and open settings
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction(_('Refresh Active Inputs'), () => this._refreshActiveInputs());
         this.menu.addAction(_('Rescan Displays'), () => {
             this._displays = this._detectDisplays();
             this._buildMenu();
         });
+        if (this._extension && typeof this._extension.openPreferences === 'function') {
+            this.menu.addAction(_('Settings…'), () => {
+                try { this._extension.openPreferences(); } catch (_e) {}
+            });
+        }
     }
 
     _switchAll(vcpValue) {
@@ -277,18 +283,22 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         const args = ['ddcutil', '-d', String(displayId), 'getvcp', '60'];
         const { ok, stdout } = await this._runCommand(args, 2500);
         if (!ok)
-            return null;
+            return { code: null, raw: '' };
         const text = stdout || '';
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        const rawLine = lines.find(l => /VCP code\s*0x?60/i.test(l)) || lines[0] || '';
         const m = text.match(/current\s+value\s*=\s*(0x[0-9a-fA-F]+|\d+)/);
-        if (!m)
-            return null;
-        let code = m[1];
-        if (/^\d+$/.test(code)) {
-            const n = parseInt(code, 10);
-            if (Number.isFinite(n))
-                code = '0x' + n.toString(16).padStart(2, '0');
+        let code = null;
+        if (m) {
+            code = m[1];
+            if (/^\d+$/.test(code)) {
+                const n = parseInt(code, 10);
+                if (Number.isFinite(n))
+                    code = '0x' + n.toString(16).padStart(2, '0');
+            }
+            code = String(code).toLowerCase();
         }
-        return String(code).toLowerCase();
+        return { code, raw: rawLine };
     }
 
     // Run a command with timeout; returns { ok, stdout, stderr, status }
@@ -351,10 +361,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             updates.push((async () => {
                 let text = `${d.label || (_('Display') + ' ' + d.id)}: ${_('Unknown')}`;
                 try {
-                    const code = await this._readInputOne(d.id);
-                    if (code) {
-                        const label = INPUT_MAP[code] || code;
-                        text = `${d.label || (_('Display') + ' ' + d.id)}: ${label}`;
+                    const res = await this._readInputOne(d.id);
+                    if (res) {
+                        if (res.raw && res.raw.length > 0) {
+                            // Fallback: show raw ddcutil output line
+                            text = `${d.label || (_('Display') + ' ' + d.id)}: ${res.raw}`;
+                        }
                     }
                 } catch (_e) {
                     // keep Unknown
@@ -427,7 +439,7 @@ export default class DisplaySwitchExtension extends Extension {
         } catch (_e) {
             settings = null;
         }
-        this._indicator = new DisplaySwitchIndicator(settings);
+        this._indicator = new DisplaySwitchIndicator(settings, this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
