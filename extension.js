@@ -61,6 +61,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (this._settings) {
             this._settingsChangedId = this._settings.connect('changed::positions', () => {
                 this._relabelDisplays();
+                // Persist updated positions into consolidated monitor records
+                this._persistMonitors(this._displays);
                 this._buildMenu();
             });
         }
@@ -100,7 +102,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             for (const d of list) {
                 const label = d.label || `${_('Display')} ${d.id}`;
                 const key = this._stableMonitorKey(d);
-                const initial = this._lastInputs[key];
+                // Prefer per-ID persisted last input; fallback to legacy map
+                const initial = (d.lastInput && String(d.lastInput)) || this._lastInputs[key];
                 let text = `${label}: ${_('Unknown')}`;
                 if (initial) {
                     const friendly = INPUT_MAP[initial];
@@ -113,11 +116,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-            // Refresh on menu open
-            this.menu.connect('open-state-changed', (_m, isOpen) => {
-                if (isOpen)
-                    this._refreshActiveInputs();
-            });
+            // Active input is refreshed only via explicit action
         }
 
         // Submenu: All monitors
@@ -180,18 +179,13 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
         for (const d of this._displays) {
             this._runSetVcp(vcpValue, d.id ?? d);
-            const key = this._stableMonitorKey(d);
-            this._updateLastInput(key, vcpValue);
         }
     }
 
     _switchOne(vcpValue, display) {
         this._runSetVcp(vcpValue, display);
         const d = this._displays.find(x => x.id === display);
-        if (d) {
-            const key = this._stableMonitorKey(d);
-            this._updateLastInput(key, vcpValue);
-        }
+        // Do not persist last input on switch; only on refresh
     }
 
     _runSetVcp(vcpValue, display) {
@@ -280,8 +274,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             }
 
             // Apply position tags (from settings) and persist to settings if available
-            this._persistMonitors(displays);
             this._applyPositions(displays);
+            // Hydrate last inputs from settings and then persist consolidated records
+            this._hydrateLastInputs(displays);
+            this._persistMonitors(displays);
 
             return displays;
         } catch (e) {
@@ -386,7 +382,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 if (res && res.code) {
                     const friendly = INPUT_MAP[res.code];
                     item.label.text = friendly ? `${displayName}: ${friendly}` : `${displayName}: ${res.code}`;
+                    // Update legacy map for backward compat
                     this._updateLastInput(key, res.code);
+                    // Persist per-ID last input in monitors
+                    d.lastInput = String(res.code).toLowerCase();
+                    this._saveLastInputForDisplay(d.id, d.lastInput);
                 } else if (res && res.raw && res.raw.length > 0) {
                     item.label.text = `${displayName}: ${res.raw}`;
                 } else {
@@ -471,12 +471,77 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (!this._settings)
             return;
         try {
-            // Store as array of JSON strings for flexibility
-            const arr = displays.map(d => JSON.stringify({ id: d.id, model: d.model || '', serial: d.serial || '' }));
-            this._settings.set_strv('monitors', arr);
+            // Merge with existing records to preserve lastInput
+            const existing = this._loadMonitorRecords();
+            const byId = new Map(existing.map(r => [r.id, r]));
+            const merged = [];
+            for (const d of displays) {
+                const prev = byId.get(d.id) || {};
+                const rec = {
+                    id: d.id,
+                    model: d.model || '',
+                    serial: d.serial || '',
+                    position: d.position || '',
+                    lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
+                };
+                merged.push(rec);
+            }
+            this._settings.set_strv('monitors', merged.map(r => JSON.stringify(r)));
         } catch (_e) {
             // Silently ignore if schema missing or not compiled
         }
+    }
+
+    _loadMonitorRecords() {
+        if (!this._settings)
+            return [];
+        try {
+            const arr = this._settings.get_strv('monitors');
+            const out = [];
+            for (const s of arr) {
+                try {
+                    const o = JSON.parse(s);
+                    if (o && typeof o.id === 'number')
+                        out.push(o);
+                } catch (_e) {}
+            }
+            return out;
+        } catch (_e) {
+            return [];
+        }
+    }
+
+    _hydrateLastInputs(displays) {
+        const records = this._loadMonitorRecords();
+        const map = new Map(records.map(r => [r.id, r.lastInput]));
+        for (const d of displays) {
+            const li = map.get(d.id);
+            if (li)
+                d.lastInput = String(li);
+        }
+    }
+
+    _saveLastInputForDisplay(id, code) {
+        if (!this._settings)
+            return;
+        const norm = (() => {
+            let c = String(code).toLowerCase();
+            if (/^\d+$/.test(c)) {
+                const n = parseInt(c, 10);
+                if (Number.isFinite(n)) c = '0x' + n.toString(16).padStart(2, '0');
+            }
+            return c;
+        })();
+        const recs = this._loadMonitorRecords();
+        for (const r of recs) {
+            if (r.id === id) {
+                r.lastInput = norm;
+                break;
+            }
+        }
+        try {
+            this._settings.set_strv('monitors', recs.map(r => JSON.stringify(r)));
+        } catch (_e) {}
     }
 });
 
