@@ -51,9 +51,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
         this._settings = settings || null;
         this._extension = extension || null;
-        // Status label items per display for read-only active input section
-        // Map: key -> PopupMenuItem
-        this._statusItems = new Map();
         // Per-display input menu items to toggle checkmarks
         // Map: displayId -> Map<vcpCode, PopupMenuItem>
         this._inputItemsByDisplay = new Map();
@@ -82,7 +79,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     _clearMenu() {
         this.menu.removeAll();
-        this._statusItems.clear();
     }
 
     _buildMenu() {
@@ -92,48 +88,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Refresh labels with position tags if any
         this._relabelDisplays();
 
-        // Active Inputs (read-only) section
-        if (this._displays.length > 0) {
-            const statusHeader = new PopupMenu.PopupMenuItem(_('Active Inputs'), { reactive: false });
-            try { statusHeader.actor.add_style_class_name('popup-subtitle-menu-item'); } catch (_e) {}
-            this.menu.addMenuItem(statusHeader);
-
-            // Sort for consistent order
-            const list = [...this._displays];
-            const rank = p => (p === 'left' ? 0 : (p === 'center' ? 1 : (p === 'right' ? 2 : 3)));
-            list.sort((a, b) => (rank(a.position) - rank(b.position)) || (a.id - b.id));
-
-            for (const d of list) {
-                const label = d.label || `${_('Display')} ${d.id}`;
-                const key = this._stableMonitorKey(d);
-                // Prefer per-ID persisted last input; fallback to legacy map
-                const initial = (d.lastInput && String(d.lastInput)) || this._lastInputs[key];
-                let text = `${label}: ${_('Unknown')}`;
-                if (initial) {
-                    const friendly = INPUT_MAP[initial];
-                    text = friendly ? `${label}: ${friendly}` : `${label}: ${initial}`;
-                }
-                const item = new PopupMenu.PopupMenuItem(text, { reactive: false });
-                this._statusItems.set(key, item);
-                this.menu.addMenuItem(item);
-            }
-
-            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            // Active input is refreshed only via explicit action
-        }
-
-        // Submenu: All monitors
-        const allSub = new PopupMenu.PopupSubMenuMenuItem(_('All Monitors'));
-        allSub.menu.addAction(_('Switch to HDMI-1'), () => this._switchAll('0x11'));
-        allSub.menu.addAction(_('Switch to DisplayPort-1'), () => this._switchAll('0x0f'));
-        allSub.menu.addAction(_('Switch to USB-C'), () => this._switchAll('0x1b'));
-        this.menu.addMenuItem(allSub);
-
         // Per-display submenus
-        if (this._displays.length > 0) {
-            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        }
 
         const list2 = [...this._displays];
         // Sort: left -> center -> right -> unknown, then by id
@@ -172,8 +127,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
 
         // Rescan displays and open settings
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this.menu.addAction(_('Refresh Active Inputs'), () => this._refreshActiveInputs());
+        if (this._displays.length > 0)
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction(_('Rescan Displays'), () => {
             this._displays = this._detectDisplays();
             this._buildMenu();
@@ -182,24 +137,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this.menu.addAction(_('Settings…'), () => {
                 try { this._extension.openPreferences(); } catch (_e) {}
             });
-        }
-    }
-
-    _switchAll(vcpValue) {
-        if (this._displays.length === 0) {
-            // Fallback: run without specifying display
-            GLib.spawn_command_line_async(`ddcutil setvcp 60 ${vcpValue}`);
-            return;
-        }
-        for (const d of this._displays) {
-            this._runSetVcp(vcpValue, d.id ?? d);
-            // Optimistically persist and reflect selection
-            const key = this._stableMonitorKey(d);
-            this._updateLastInput(key, vcpValue);
-            d.lastInput = String(vcpValue).toLowerCase();
-            this._saveLastInputForDisplay(d.id, d.lastInput);
-            this._updateSelectionMarkers(d.id, d.lastInput);
-            this._updateStatusLabelFor(d);
         }
     }
 
@@ -213,7 +150,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             d.lastInput = String(vcpValue).toLowerCase();
             this._saveLastInputForDisplay(d.id, d.lastInput);
             this._updateSelectionMarkers(d.id, d.lastInput);
-            this._updateStatusLabelFor(d);
         }
     }
 
@@ -395,40 +331,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         });
     }
 
-    // Refresh the read-only Active Inputs section
-    async _refreshActiveInputs() {
-        // Run sequentially to avoid I2C contention and allow slow monitors
-        for (const d of this._displays) {
-            const key = this._stableMonitorKey(d);
-            const item = this._statusItems.get(key);
-            if (!item)
-                continue;
-            const displayName = d.label || (_('Display') + ' ' + d.id);
-            // Show a transient reading state to avoid flicker to Unknown
-            item.label.text = `${displayName}: ${_('Reading…')}`;
-            try {
-                const res = await this._readInputOne(d.id);
-                if (res && res.code) {
-                    const friendly = INPUT_MAP[res.code];
-                    item.label.text = friendly ? `${displayName}: ${friendly}` : `${displayName}: ${res.code}`;
-                    // Update legacy map for backward compat
-                    this._updateLastInput(key, res.code);
-                    // Persist per-ID last input in monitors
-                    d.lastInput = String(res.code).toLowerCase();
-                    this._saveLastInputForDisplay(d.id, d.lastInput);
-                    // Reflect in per-display selection markers
-                    this._updateSelectionMarkers(d.id, d.lastInput);
-                } else if (res && res.raw && res.raw.length > 0) {
-                    item.label.text = `${displayName}: ${res.raw}`;
-                } else {
-                    // Keep previous text on empty read; avoid reverting to Unknown
-                }
-            } catch (_e) {
-                // Keep previous text on read error
-            }
-        }
-    }
-
     _monitorKey(d) {
         if (d.serial && d.serial.length > 0)
             return `sn:${d.serial}`;
@@ -593,17 +495,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
     }
 
-    _updateStatusLabelFor(d) {
-        const key = this._stableMonitorKey(d);
-        const item = this._statusItems.get(key);
-        if (!item)
-            return;
-        const displayName = d.label || (_('Display') + ' ' + d.id);
-        const friendly = d.lastInput ? INPUT_MAP[String(d.lastInput)] : null;
-        if (d.lastInput) {
-            item.label.text = friendly ? `${displayName}: ${friendly}` : `${displayName}: ${d.lastInput}`;
-        }
-    }
+    // no-op: status label logic removed; checkmarks indicate active input
 });
 
 export default class DisplaySwitchExtension extends Extension {
