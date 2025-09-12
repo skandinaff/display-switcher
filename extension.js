@@ -54,6 +54,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Status label items per display for read-only active input section
         // Map: key -> PopupMenuItem
         this._statusItems = new Map();
+        // Per-display input menu items to toggle checkmarks
+        // Map: displayId -> Map<vcpCode, PopupMenuItem>
+        this._inputItemsByDisplay = new Map();
 
         this._lastInputs = {};
         this._displays = this._detectDisplays();
@@ -84,6 +87,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     _buildMenu() {
         this._clearMenu();
+        this._inputItemsByDisplay.clear();
 
         // Refresh labels with position tags if any
         this._relabelDisplays();
@@ -139,20 +143,30 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         for (const d of list2) {
             const label = d.label || `${_('Display')} ${d.id}`;
             const sub = new PopupMenu.PopupSubMenuMenuItem(label);
-            // Stage 1: static checkmark on the first item (no backend detection)
+            // Build input options and wire up dynamic checkmarks based on persisted last input
+            const items = new Map();
+
             const itemHdmi = new PopupMenu.PopupMenuItem(_('Switch to HDMI-1'));
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
-            if (itemHdmi.setOrnament)
-                itemHdmi.setOrnament(PopupMenu.Ornament.CHECK);
             sub.menu.addMenuItem(itemHdmi);
+            items.set('0x11', itemHdmi);
 
             const itemDp = new PopupMenu.PopupMenuItem(_('Switch to DisplayPort-1'));
             itemDp.connect('activate', () => this._switchOne('0x0f', d.id));
             sub.menu.addMenuItem(itemDp);
+            items.set('0x0f', itemDp);
 
             const itemUsbC = new PopupMenu.PopupMenuItem(_('Switch to USB-C'));
             itemUsbC.connect('activate', () => this._switchOne('0x1b', d.id));
             sub.menu.addMenuItem(itemUsbC);
+            items.set('0x1b', itemUsbC);
+
+            this._inputItemsByDisplay.set(d.id, items);
+
+            // Initialize checkmark based on persisted last input
+            const key = this._stableMonitorKey(d);
+            const initial = (d.lastInput && String(d.lastInput)) || this._lastInputs[key];
+            this._updateSelectionMarkers(d.id, initial);
 
             this.menu.addMenuItem(sub);
         }
@@ -179,13 +193,28 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
         for (const d of this._displays) {
             this._runSetVcp(vcpValue, d.id ?? d);
+            // Optimistically persist and reflect selection
+            const key = this._stableMonitorKey(d);
+            this._updateLastInput(key, vcpValue);
+            d.lastInput = String(vcpValue).toLowerCase();
+            this._saveLastInputForDisplay(d.id, d.lastInput);
+            this._updateSelectionMarkers(d.id, d.lastInput);
+            this._updateStatusLabelFor(d);
         }
     }
 
     _switchOne(vcpValue, display) {
         this._runSetVcp(vcpValue, display);
         const d = this._displays.find(x => x.id === display);
-        // Do not persist last input on switch; only on refresh
+        if (d) {
+            const key = this._stableMonitorKey(d);
+            // Optimistically persist selection to keep UI responsive
+            this._updateLastInput(key, vcpValue);
+            d.lastInput = String(vcpValue).toLowerCase();
+            this._saveLastInputForDisplay(d.id, d.lastInput);
+            this._updateSelectionMarkers(d.id, d.lastInput);
+            this._updateStatusLabelFor(d);
+        }
     }
 
     _runSetVcp(vcpValue, display) {
@@ -387,6 +416,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     // Persist per-ID last input in monitors
                     d.lastInput = String(res.code).toLowerCase();
                     this._saveLastInputForDisplay(d.id, d.lastInput);
+                    // Reflect in per-display selection markers
+                    this._updateSelectionMarkers(d.id, d.lastInput);
                 } else if (res && res.raw && res.raw.length > 0) {
                     item.label.text = `${displayName}: ${res.raw}`;
                 } else {
@@ -542,6 +573,36 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         try {
             this._settings.set_strv('monitors', recs.map(r => JSON.stringify(r)));
         } catch (_e) {}
+    }
+
+    _updateSelectionMarkers(displayId, selectedCode) {
+        const items = this._inputItemsByDisplay.get(displayId);
+        if (!items)
+            return;
+        // Normalize code similar to persistence logic
+        let code = selectedCode ? String(selectedCode).toLowerCase() : '';
+        if (/^\d+$/.test(code)) {
+            const n = parseInt(code, 10);
+            if (Number.isFinite(n))
+                code = '0x' + n.toString(16).padStart(2, '0');
+        }
+        for (const [vcp, item] of items.entries()) {
+            if (item.setOrnament) {
+                item.setOrnament(vcp === code ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
+            }
+        }
+    }
+
+    _updateStatusLabelFor(d) {
+        const key = this._stableMonitorKey(d);
+        const item = this._statusItems.get(key);
+        if (!item)
+            return;
+        const displayName = d.label || (_('Display') + ' ' + d.id);
+        const friendly = d.lastInput ? INPUT_MAP[String(d.lastInput)] : null;
+        if (d.lastInput) {
+            item.label.text = friendly ? `${displayName}: ${friendly}` : `${displayName}: ${d.lastInput}`;
+        }
     }
 });
 
