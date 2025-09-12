@@ -33,7 +33,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
 
         const page = new Adw.PreferencesPage({ title: _('Display Switcher') });
-        const group = new Adw.PreferencesGroup({ title: _('Monitor Positions') });
+        const group = new Adw.PreferencesGroup({ title: _('Monitors') });
         page.add(group);
 
         let monitors = loadMonitors(settings);
@@ -49,17 +49,26 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             return;
         }
 
-        // Build a row per monitor with a dropdown for position
-        // Order: Unknown, Left, Center, Right
+        // Build a row per monitor with inline ID, position dropdown, and usable inputs dropdown
+        // Order for position: Unknown, Left, Center, Right
         const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
+        const INPUT_LABELS = new Map([
+            ['0x11', _('HDMI')],
+            ['0x0f', _('DP')],
+            ['0x1b', _('USB-C')],
+        ]);
+        const ALL_CODES = ['0x11', '0x0f', '0x1b'];
 
         for (const mon of monitors) {
             const row = new Adw.ActionRow();
 
             const title = mon.model && mon.model.length > 0 ? mon.model : `${_('Display')} ${mon.id}`;
             row.title = title;
+            const subtitleBits = [];
             if (mon.serial && mon.serial.length > 0)
-                row.subtitle = _('Serial: ') + mon.serial;
+                subtitleBits.push(_('Serial: ') + mon.serial);
+            subtitleBits.push(_('ID: ') + String(mon.id));
+            row.subtitle = subtitleBits.join('  •  ');
 
             const strList = new Gtk.StringList();
             for (const o of options)
@@ -99,6 +108,90 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             });
 
             row.add_suffix(drop);
+            // Usable inputs dropdown with checkmarks (popover menu)
+            const inputsButton = new Gtk.MenuButton();
+            inputsButton.valign = Gtk.Align.CENTER;
+
+            const buttonLabel = new Gtk.Label({ xalign: 0.5 });
+            const refreshButtonLabel = () => {
+                const fresh = loadMonitors(settings);
+                let target = fresh.find(m => m && m.id === mon.id);
+                if (!target && mon.serial)
+                    target = fresh.find(m => m && m.serial === mon.serial);
+                const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                const effective = (list && list.length > 0) ? list : ALL_CODES;
+                const text = effective.map(c => INPUT_LABELS.get(c) || c).join(', ');
+                buttonLabel.label = text.length > 0 ? text : _('All');
+            };
+            refreshButtonLabel();
+
+            inputsButton.set_child(buttonLabel);
+
+            const popover = new Gtk.Popover();
+            const listBox = new Gtk.ListBox();
+            listBox.selection_mode = Gtk.SelectionMode.NONE;
+            popover.set_child(listBox);
+
+            const buildRow = (code) => {
+                const lb = new Gtk.ListBoxRow();
+                const h = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 8, margin_start: 10, margin_end: 10, margin_top: 6, margin_bottom: 6 });
+                const lbl = new Gtk.Label({ label: INPUT_LABELS.get(code) || code, xalign: 0 });
+                const check = new Gtk.Image({ icon_name: 'emblem-ok-symbolic', visible: false });
+                h.append(lbl);
+                h.append(new Gtk.Box({ hexpand: true }));
+                h.append(check);
+                lb.set_child(h);
+
+                const isChecked = () => {
+                    const fresh = loadMonitors(settings);
+                    let target = fresh.find(m => m && m.id === mon.id);
+                    if (!target && mon.serial)
+                        target = fresh.find(m => m && m.serial === mon.serial);
+                    const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                    if (!list || list.length === 0) // empty means all enabled
+                        return true;
+                    return list.includes(code);
+                };
+
+                const updateVisual = () => {
+                    check.visible = isChecked();
+                };
+                updateVisual();
+
+                const toggle = () => {
+                    const fresh = loadMonitors(settings);
+                    let target = fresh.find(m => m && m.id === mon.id);
+                    if (!target && mon.serial)
+                        target = fresh.find(m => m && m.serial === mon.serial);
+                    if (!target)
+                        return;
+                    const list = Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
+                    const idx = list.indexOf(code);
+                    // Toggle: if currently included, remove; else add
+                    if (idx >= 0)
+                        list.splice(idx, 1);
+                    else
+                        list.push(code);
+                    target.usableInputs = list;
+                    saveMonitors(settings, fresh);
+                    updateVisual();
+                    refreshButtonLabel();
+                };
+
+                // Support keyboard activation
+                lb.connect('activate', () => toggle());
+                // Make mouse clicks toggle too when selection is NONE
+                const click = new Gtk.GestureClick();
+                click.connect('released', () => toggle());
+                lb.add_controller(click);
+                return lb;
+            };
+
+            for (const code of ALL_CODES)
+                listBox.append(buildRow(code));
+
+            inputsButton.popover = popover;
+            row.add_suffix(inputsButton);
             group.add(row);
         }
 
