@@ -132,8 +132,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     }
 
     _switchOne(vcpValue, display) {
-        this._runSetVcp(vcpValue, display);
+        // Respect per-display usable inputs; ignore activation if disabled
         const d = this._displays.find(x => x.id === display);
+        if (d && !this._isInputUsable(d, vcpValue))
+            return;
+        this._runSetVcp(vcpValue, display);
         if (d) {
             // Optimistically persist selection to keep UI responsive
             d.lastInput = String(vcpValue).toLowerCase();
@@ -373,6 +376,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     serial: d.serial || '',
                     position: d.position || '',
                     lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
+                    usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
             }
@@ -421,6 +425,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 const li = rec.lastInput;
                 if (li)
                     d.lastInput = String(li).toLowerCase();
+                if (Array.isArray(rec.usableInputs)) {
+                    d.usableInputs = rec.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v);
+                }
             }
             this._applyPositionLabel(d);
         }
@@ -446,13 +453,27 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         const items = this._inputItemsByDisplay.get(displayId);
         if (!items)
             return;
+        const disp = this._displays.find(x => x.id === displayId);
         // Normalize code similar to persistence logic
         const code = this._normalizeVcpCode(selectedCode);
         for (const [vcp, item] of items.entries()) {
+            const usable = disp ? this._isInputUsable(disp, vcp) : true;
+            if (item.setSensitive)
+                item.setSensitive(!!usable);
             if (item.setOrnament) {
-                item.setOrnament(vcp === code ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
+                const ornament = (vcp === code && usable) ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE;
+                item.setOrnament(ornament);
             }
         }
+    }
+
+    _isInputUsable(display, code) {
+        const norm = this._normalizeVcpCode(code);
+        const list = Array.isArray(display.usableInputs) ? display.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : null;
+        // If no preference set, treat all inputs as usable
+        if (!list || list.length === 0)
+            return true;
+        return list.includes(norm);
     }
 
 });

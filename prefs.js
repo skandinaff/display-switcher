@@ -102,6 +102,74 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             group.add(row);
         }
 
+        // Usable inputs per monitor
+        const groupInputs = new Adw.PreferencesGroup({ title: _('Usable Inputs') });
+        page.add(groupInputs);
+
+        for (const mon of monitors) {
+            const row = new Adw.ActionRow();
+
+            const title = mon.model && mon.model.length > 0 ? mon.model : `${_('Display')} ${mon.id}`;
+            row.title = title;
+            if (mon.serial && mon.serial.length > 0)
+                row.subtitle = _('Select inputs that are connected.');
+
+            const box = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 8 });
+
+            // Helper to read/update the list safely
+            const getUsable = () => {
+                const fresh = loadMonitors(settings);
+                let target = fresh.find(m => m && m.id === mon.id);
+                if (!target && mon.serial)
+                    target = fresh.find(m => m && m.serial === mon.serial);
+                if (!target)
+                    return { fresh, target: null, list: [] };
+                const lst = Array.isArray(target.usableInputs) ? target.usableInputs.slice() : [];
+                return { fresh, target, list: lst };
+            };
+
+            const setChecked = (code, checked) => {
+                const { fresh, target, list } = getUsable();
+                if (!target)
+                    return;
+                const norm = String(code).toLowerCase();
+                const idx = list.findIndex(v => String(v).toLowerCase() === norm);
+                if (checked && idx === -1) list.push(norm);
+                if (!checked && idx !== -1) list.splice(idx, 1);
+                target.usableInputs = list;
+                saveMonitors(settings, fresh);
+            };
+
+            // Default behavior: if no list set, treat as all enabled
+            const initial = Array.isArray(mon.usableInputs) ? mon.usableInputs.map(v => String(v).toLowerCase()) : null;
+            const isInitiallyChecked = code => {
+                if (!initial || initial.length === 0)
+                    return true;
+                return initial.includes(String(code).toLowerCase());
+            };
+
+            const cbHdmi = new Gtk.CheckButton({ label: _('HDMI-1') });
+            cbHdmi.valign = Gtk.Align.CENTER;
+            cbHdmi.active = isInitiallyChecked('0x11');
+            cbHdmi.connect('toggled', () => setChecked('0x11', cbHdmi.active));
+            box.append(cbHdmi);
+
+            const cbDp = new Gtk.CheckButton({ label: _('DisplayPort-1') });
+            cbDp.valign = Gtk.Align.CENTER;
+            cbDp.active = isInitiallyChecked('0x0f');
+            cbDp.connect('toggled', () => setChecked('0x0f', cbDp.active));
+            box.append(cbDp);
+
+            const cbUsbC = new Gtk.CheckButton({ label: _('USB-C') });
+            cbUsbC.valign = Gtk.Align.CENTER;
+            cbUsbC.active = isInitiallyChecked('0x1b');
+            cbUsbC.connect('toggled', () => setChecked('0x1b', cbUsbC.active));
+            box.append(cbUsbC);
+
+            row.add_suffix(box);
+            groupInputs.add(row);
+        }
+
         window.add(page);
     }
 }
