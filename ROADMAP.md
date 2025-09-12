@@ -14,12 +14,10 @@ This file tracks planned work and staged delivery for the “active connection�
 4) Wiring: update checkmarks based on detection results; update after switching or rescan.
 5) Polishing: radio-style selection per submenu; error states; optional refresh button per display.
 
-## Current Milestone (Stage 5)
-- Polishing and UX refinements:
-  - Radio-style selection per submenu is in place; review consistency.
-  - Add subtle error/unknown states in UI when detection fails.
-  - Consider an optional per-display "Refresh status" action.
-  - Final pass on wording, ordering, and accessibility.
+## Current Milestone (Stage 1 — rollback)
+- Reverted detection wiring and radio ornaments.
+- Static checkmark on first item in each per-display submenu.
+- Added minimal read-only "Active Inputs" section that reads and shows the current input per display on menu open or manual refresh.
 
 ## Notes / Considerations
 - Use `PopupMenu.PopupMenuItem` with `setOrnament(PopupMenu.Ornament.CHECK)` to show a checkmark without a switch.
@@ -58,10 +56,10 @@ This file tracks planned work and staged delivery for the “active connection�
 - **Errors and empty states:**
   - If detection fails or `ddcutil` is absent, show “Unknown input” subtly and keep items actionable.
   - Never block opening menus; degrade gracefully.
-- **Code hooks to add:**
+- **Code hooks used:**
   - `_readInputOne(displayId): Promise<string|null>` — parses VCP 0x60 and returns a mapped code or `null`.
-  - `_updateDisplayMenuChecks(displayId, value)` — updates radio selection for that submenu.
-  - `_stableMonitorKey(d)` — shared helper (serial preferred; fallback `model|id`).
+  - `_updateSelectionMarkers(displayId, value)` — updates radio/check selection for that submenu.
+  - `_monitorKey(d)` — helper for deriving a stable key (serial preferred; fallback `model|id`).
   - Keep references to created submenu menu items per display for quick updates.
 - **Testing steps (manual):**
   - Rescan displays; open a per-display submenu and observe detection updating selection.

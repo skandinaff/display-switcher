@@ -29,18 +29,10 @@ function loadMonitors(settings) {
     return list;
 }
 
-function loadPositions(settings) {
+function saveMonitors(settings, list) {
     try {
-        return settings.get_value('positions').deepUnpack();
-    } catch (_e) {
-        return {};
-    }
-}
-
-function savePositions(settings, mapObj) {
-    try {
-        const variant = new GLib.Variant('a{ss}', mapObj);
-        settings.set_value('positions', variant);
+        const arr = list.map(o => JSON.stringify(o));
+        settings.set_strv('monitors', arr);
     } catch (_e) {
         // ignore
     }
@@ -55,8 +47,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         const group = new Adw.PreferencesGroup({ title: _('Monitor Positions') });
         page.add(group);
 
-        const monitors = loadMonitors(settings);
-        let positions = loadPositions(settings);
+        let monitors = loadMonitors(settings);
 
         if (monitors.length === 0) {
             const status = new Adw.StatusPage({
@@ -88,8 +79,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             const drop = new Gtk.DropDown({ model: strList });
             drop.valign = Gtk.Align.CENTER;
 
-            const key = monitorKeyFor(mon);
-            let current = (positions[key] || '').toLowerCase();
+            let current = (mon.position || '').toLowerCase();
             if (current === 'centre') current = 'center';
             let idx = 0; // Unknown
             if (current === 'left') idx = 1;
@@ -99,18 +89,24 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
 
             drop.connect('notify::selected', () => {
                 const sel = drop.selected;
-                // Update mapping: 0 -> remove, 1 -> left, 2 -> center, 3 -> right
-                positions = loadPositions(settings); // refresh in case changed externally
+                // Update monitors list: 0 -> clear, 1 -> left, 2 -> center, 3 -> right
+                monitors = loadMonitors(settings); // refresh in case changed externally
+                // Find by id first; fall back to serial if needed
+                let target = monitors.find(m => m && m.id === mon.id);
+                if (!target && mon.serial)
+                    target = monitors.find(m => m && m.serial === mon.serial);
+                if (!target)
+                    return;
                 if (sel === 0) {
-                    if (positions[key]) delete positions[key];
+                    target.position = '';
                 } else if (sel === 1) {
-                    positions[key] = 'left';
+                    target.position = 'left';
                 } else if (sel === 2) {
-                    positions[key] = 'center';
+                    target.position = 'center';
                 } else if (sel === 3) {
-                    positions[key] = 'right';
+                    target.position = 'right';
                 }
-                savePositions(settings, positions);
+                saveMonitors(settings, monitors);
             });
 
             row.add_suffix(drop);

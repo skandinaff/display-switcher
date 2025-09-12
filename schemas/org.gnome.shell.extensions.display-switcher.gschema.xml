@@ -3,19 +3,11 @@
   <schema id="org.gnome.shell.extensions.display-switcher" path="/org/gnome/shell/extensions/display-switcher/">
     <key name="monitors" type="as">
       <default>[]</default>
-      <summary>Detected monitors</summary>
+      <summary>Monitors state</summary>
       <description>
-        List of detected monitors as JSON strings with fields: id, model, serial.
-      </description>
-    </key>
-    <key name="positions" type="a{ss}">
-      <default>{}</default>
-      <summary>Assigned positions for monitors</summary>
-      <description>
-        A mapping from a monitor key to a position string. Keys are derived
-        as 'sn:SERIAL' when available, otherwise 'model:MODEL|id:ID'. Values are
-        lowercase strings like 'left', 'center' (or 'centre'), or 'right'. Unknown/cleared positions should
-        be removed from the mapping.
+        Canonical list of monitors as JSON strings with fields: id, model, serial,
+        position (one of 'left'|'center'|'right' or empty), and lastInput (e.g. '0x11').
+        The extension reads and writes all state from this key.
       </description>
     </key>
   </schema>
