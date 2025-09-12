@@ -90,12 +90,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             // Build input options and wire up dynamic checkmarks based on persisted last input
             const items = new Map();
 
-            const itemHdmi = new PopupMenu.PopupMenuItem(_('HDMI-1'));
+            const itemHdmi = new PopupMenu.PopupMenuItem(_('HDMI'));
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
             sub.menu.addMenuItem(itemHdmi);
             items.set('0x11', itemHdmi);
 
-            const itemDp = new PopupMenu.PopupMenuItem(_('DisplayPort-1'));
+            const itemDp = new PopupMenu.PopupMenuItem(_('DP'));
             itemDp.connect('activate', () => this._switchOne('0x0f', d.id));
             sub.menu.addMenuItem(itemDp);
             items.set('0x0f', itemDp);

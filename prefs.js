@@ -53,8 +53,8 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         // Order for position: Unknown, Left, Center, Right
         const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
         const INPUT_LABELS = new Map([
-            ['0x11', _('HDMI-1')],
-            ['0x0f', _('DisplayPort-1')],
+            ['0x11', _('HDMI')],
+            ['0x0f', _('DP')],
             ['0x1b', _('USB-C')],
         ]);
         const ALL_CODES = ['0x11', '0x0f', '0x1b'];
