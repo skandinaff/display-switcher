@@ -132,6 +132,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this.menu.addAction(_('Rescan Displays'), () => {
             this._displays = this._detectDisplays();
             this._buildMenu();
+            // Also refresh active inputs to update checkmarks
+            // Fire and forget; runs asynchronously without blocking the UI
+            this._rescanActiveInputs().catch(() => {});
         });
         if (this._extension && typeof this._extension.openPreferences === 'function') {
             this.menu.addAction(_('Settings…'), () => {
@@ -280,6 +283,24 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             code = String(code).toLowerCase();
         }
         return { code, raw: rawLine };
+    }
+
+    // Refresh active inputs for all known displays and update UI/persistence
+    async _rescanActiveInputs() {
+        const displays = Array.isArray(this._displays) ? [...this._displays] : [];
+        for (const d of displays) {
+            const { code } = await this._readInputOne(d.id);
+            if (!code)
+                continue;
+            d.lastInput = String(code).toLowerCase();
+            // Persist under both consolidated records and legacy last-inputs map
+            const key = this._stableMonitorKey(d);
+            this._updateLastInput(key, d.lastInput);
+            this._saveLastInputForDisplay(d.id, d.lastInput);
+            this._updateSelectionMarkers(d.id, d.lastInput);
+        }
+        // Save merged monitor records reflecting any new lastInput values
+        this._persistMonitors(displays);
     }
 
     // Run a command with timeout; returns { ok, stdout, stderr, status }
