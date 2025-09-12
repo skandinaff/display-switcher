@@ -5,7 +5,10 @@
       <default>[]</default>
       <summary>Detected monitors</summary>
       <description>
-        List of detected monitors as JSON strings with fields: id, model, serial.
+        List of detected monitors as JSON strings with fields: id, model, serial,
+        position (one of 'left'|'center'|'right' or empty), and lastInput (e.g. '0x11').
+        This is a convenience cache the extension uses to display labels and remember
+        the last input selection between sessions.
       </description>
     </key>
     <key name="positions" type="a{ss}">

@@ -27,15 +27,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-// Canonical mapping of input codes (VCP 0x60) to labels
-// Extendable in later stages if needed
-const INPUT_MAP = Object.freeze({
-    '0x11': 'HDMI-1',
-    '0x0f': 'DisplayPort-1',
-    '0x1b': 'USB-C',
-});
-
-const INPUT_CODES = Object.freeze(['0x11', '0x0f', '0x1b']);
+// VCP 0x60 (Input Select) common values we expose:
+// 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
 
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
@@ -119,7 +112,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._inputItemsByDisplay.set(d.id, items);
 
             // Initialize checkmark based on persisted last input
-            const key = this._stableMonitorKey(d);
+            const key = this._monitorKey(d);
             const initial = (d.lastInput && String(d.lastInput)) || this._lastInputs[key];
             this._updateSelectionMarkers(d.id, initial);
 
@@ -147,7 +140,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._runSetVcp(vcpValue, display);
         const d = this._displays.find(x => x.id === display);
         if (d) {
-            const key = this._stableMonitorKey(d);
+            const key = this._monitorKey(d);
             // Optimistically persist selection to keep UI responsive
             this._updateLastInput(key, vcpValue);
             d.lastInput = String(vcpValue).toLowerCase();
@@ -251,11 +244,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         } catch (e) {
             return [];
         }
-    }
-
-    // Stage 2 helper: provide a stable key for state bookkeeping
-    _stableMonitorKey(d) {
-        return this._monitorKey(d);
     }
 
     // Read current input for a single display via ddcutil getvcp 60
@@ -379,16 +367,23 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
     }
 
-    _updateLastInput(key, vcpCode) {
-        if (!key || !vcpCode)
-            return;
-        // Normalize numeric to hex 0x.. just in case
-        let code = String(vcpCode).toLowerCase();
+    _normalizeVcpCode(v) {
+        if (v === null || typeof v === 'undefined')
+            return '';
+        let code = String(v).toLowerCase();
         if (/^\d+$/.test(code)) {
             const n = parseInt(code, 10);
             if (Number.isFinite(n))
                 code = '0x' + n.toString(16).padStart(2, '0');
         }
+        return code;
+    }
+
+    _updateLastInput(key, vcpCode) {
+        if (!key || !vcpCode)
+            return;
+        // Normalize numeric to hex 0x.. just in case
+        const code = this._normalizeVcpCode(vcpCode);
         this._lastInputs[key] = code;
         if (this._settings) {
             try {
@@ -478,14 +473,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _saveLastInputForDisplay(id, code) {
         if (!this._settings)
             return;
-        const norm = (() => {
-            let c = String(code).toLowerCase();
-            if (/^\d+$/.test(c)) {
-                const n = parseInt(c, 10);
-                if (Number.isFinite(n)) c = '0x' + n.toString(16).padStart(2, '0');
-            }
-            return c;
-        })();
+        const norm = this._normalizeVcpCode(code);
         const recs = this._loadMonitorRecords();
         for (const r of recs) {
             if (r.id === id) {
@@ -503,12 +491,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (!items)
             return;
         // Normalize code similar to persistence logic
-        let code = selectedCode ? String(selectedCode).toLowerCase() : '';
-        if (/^\d+$/.test(code)) {
-            const n = parseInt(code, 10);
-            if (Number.isFinite(n))
-                code = '0x' + n.toString(16).padStart(2, '0');
-        }
+        const code = this._normalizeVcpCode(selectedCode);
         for (const [vcp, item] of items.entries()) {
             if (item.setOrnament) {
                 item.setOrnament(vcp === code ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
