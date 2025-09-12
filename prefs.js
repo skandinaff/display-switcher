@@ -1,19 +1,8 @@
 /* prefs.js - Preferences dialog for Display Switcher */
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
 
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
-
-function monitorKeyFor(mon) {
-    // Prefer serial; fall back to model+id combo
-    if (mon && mon.serial && mon.serial.length > 0)
-        return `sn:${mon.serial}`;
-    const model = (mon && mon.model) ? mon.model : '';
-    const id = (mon && mon.id) ? String(mon.id) : '';
-    return `model:${model}|id:${id}`;
-}
 
 function loadMonitors(settings) {
     const arr = settings.get_strv('monitors');

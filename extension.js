@@ -79,13 +79,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._relabelDisplays();
 
         // Per-display submenus
-
-        const list2 = [...this._displays];
+        const list = [...this._displays];
         // Sort: left -> center -> right -> unknown, then by id
-        const rank2 = p => (p === 'left' ? 0 : (p === 'center' ? 1 : (p === 'right' ? 2 : 3)));
-        list2.sort((a, b) => (rank2(a.position) - rank2(b.position)) || (a.id - b.id));
+        const rank = p => (p === 'left' ? 0 : (p === 'center' ? 1 : (p === 'right' ? 2 : 3)));
+        list.sort((a, b) => (rank(a.position) - rank(b.position)) || (a.id - b.id));
 
-        for (const d of list2) {
+        for (const d of list) {
             const label = d.label || `${_('Display')} ${d.id}`;
             const sub = new PopupMenu.PopupSubMenuMenuItem(label);
             // Build input options and wire up dynamic checkmarks based on persisted last input
@@ -329,15 +328,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         });
     }
 
-    _monitorKey(d) {
-        if (d.serial && d.serial.length > 0)
-            return `sn:${d.serial}`;
-        const model = d.model || '';
-        return `model:${model}|id:${d.id}`;
-    }
-
-    // positions and last-inputs are deprecated; all state lives in 'monitors'
-
     _normalizeVcpCode(v) {
         if (v === null || typeof v === 'undefined')
             return '';
@@ -465,7 +455,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
     }
 
-    // no-op: status label logic removed; checkmarks indicate active input
 });
 
 export default class DisplaySwitchExtension extends Extension {
