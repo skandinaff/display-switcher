@@ -48,14 +48,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Map: displayId -> Map<vcpCode, PopupMenuItem>
         this._inputItemsByDisplay = new Map();
 
-        this._lastInputs = {};
         this._displays = this._detectDisplays();
-        this._lastInputs = this._loadLastInputs();
         if (this._settings) {
-            this._settingsChangedId = this._settings.connect('changed::positions', () => {
+            // React to updates in consolidated monitor records
+            this._settingsChangedId = this._settings.connect('changed::monitors', () => {
                 this._relabelDisplays();
-                // Persist updated positions into consolidated monitor records
-                this._persistMonitors(this._displays);
                 this._buildMenu();
             });
         }
@@ -78,7 +75,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._clearMenu();
         this._inputItemsByDisplay.clear();
 
-        // Refresh labels with position tags if any
+        // Refresh labels with position tags if any (from monitors records)
         this._relabelDisplays();
 
         // Per-display submenus
@@ -112,8 +109,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._inputItemsByDisplay.set(d.id, items);
 
             // Initialize checkmark based on persisted last input
-            const key = this._monitorKey(d);
-            const initial = (d.lastInput && String(d.lastInput)) || this._lastInputs[key];
+            const initial = d.lastInput && String(d.lastInput);
             this._updateSelectionMarkers(d.id, initial);
 
             this.menu.addMenuItem(sub);
@@ -140,9 +136,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._runSetVcp(vcpValue, display);
         const d = this._displays.find(x => x.id === display);
         if (d) {
-            const key = this._monitorKey(d);
             // Optimistically persist selection to keep UI responsive
-            this._updateLastInput(key, vcpValue);
             d.lastInput = String(vcpValue).toLowerCase();
             this._saveLastInputForDisplay(d.id, d.lastInput);
             this._updateSelectionMarkers(d.id, d.lastInput);
@@ -234,10 +228,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 }
             }
 
-            // Apply position tags (from settings) and persist to settings if available
-            this._applyPositions(displays);
-            // Hydrate last inputs from settings and then persist consolidated records
-            this._hydrateLastInputs(displays);
+            // Hydrate position + lastInput from consolidated records and persist
+            this._hydrateFromRecords(displays);
             this._persistMonitors(displays);
 
             return displays;
@@ -281,9 +273,6 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             if (!code)
                 continue;
             d.lastInput = String(code).toLowerCase();
-            // Persist under both consolidated records and legacy last-inputs map
-            const key = this._stableMonitorKey(d);
-            this._updateLastInput(key, d.lastInput);
             this._saveLastInputForDisplay(d.id, d.lastInput);
             this._updateSelectionMarkers(d.id, d.lastInput);
         }
@@ -347,25 +336,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         return `model:${model}|id:${d.id}`;
     }
 
-    _loadPositions() {
-        if (!this._settings)
-            return {};
-        try {
-            return this._settings.get_value('positions').deepUnpack();
-        } catch (_e) {
-            return {};
-        }
-    }
-
-    _loadLastInputs() {
-        if (!this._settings)
-            return {};
-        try {
-            return this._settings.get_value('last-inputs').deepUnpack();
-        } catch (_e) {
-            return {};
-        }
-    }
+    // positions and last-inputs are deprecated; all state lives in 'monitors'
 
     _normalizeVcpCode(v) {
         if (v === null || typeof v === 'undefined')
@@ -379,41 +350,21 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         return code;
     }
 
-    _updateLastInput(key, vcpCode) {
-        if (!key || !vcpCode)
+    _applyPositionLabel(d) {
+        if (!d || !d.labelBase)
             return;
-        // Normalize numeric to hex 0x.. just in case
-        const code = this._normalizeVcpCode(vcpCode);
-        this._lastInputs[key] = code;
-        if (this._settings) {
-            try {
-                const variant = new GLib.Variant('a{ss}', this._lastInputs);
-                this._settings.set_value('last-inputs', variant);
-            } catch (_e) {}
-        }
-    }
-
-    _applyPositions(displays) {
-        const pos = this._loadPositions();
-        for (const d of displays) {
-            const key = this._monitorKey(d);
-            let p = (pos[key] || '').toLowerCase();
-            if (p === 'centre') p = 'center'; // accept British spelling
-            d.position = (p === 'left' || p === 'center' || p === 'right') ? p : undefined;
-            if (d.labelBase) {
-                let posLabel = '';
-                if (d.position === 'left') posLabel = _('Left');
-                else if (d.position === 'center') posLabel = _('Center');
-                else if (d.position === 'right') posLabel = _('Right');
-                d.label = d.labelBase + (posLabel ? ` (${posLabel})` : '');
-            }
-        }
+        let posLabel = '';
+        if (d.position === 'left') posLabel = _('Left');
+        else if (d.position === 'center') posLabel = _('Center');
+        else if (d.position === 'right') posLabel = _('Right');
+        d.label = d.labelBase + (posLabel ? ` (${posLabel})` : '');
     }
 
     _relabelDisplays() {
         if (!this._displays || this._displays.length === 0)
             return;
-        this._applyPositions(this._displays);
+        // Re-apply position labels based on current monitors records
+        this._hydrateFromRecords(this._displays);
     }
 
     _persistMonitors(displays) {
@@ -460,13 +411,28 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
     }
 
-    _hydrateLastInputs(displays) {
+    _hydrateFromRecords(displays) {
         const records = this._loadMonitorRecords();
-        const map = new Map(records.map(r => [r.id, r.lastInput]));
+        const byId = new Map(records.map(r => [r.id, r]));
+        // Also map by serial when available to improve stability
+        const bySerial = new Map();
+        for (const r of records) {
+            if (r.serial && r.serial.length > 0 && !bySerial.has(r.serial))
+                bySerial.set(r.serial, r);
+        }
         for (const d of displays) {
-            const li = map.get(d.id);
-            if (li)
-                d.lastInput = String(li);
+            let rec = byId.get(d.id);
+            if (!rec && d.serial && d.serial.length > 0)
+                rec = bySerial.get(d.serial);
+            if (rec) {
+                const pRaw = (rec.position || '').toLowerCase();
+                const p = (pRaw === 'centre') ? 'center' : pRaw; // accept British spelling
+                d.position = (p === 'left' || p === 'center' || p === 'right') ? p : undefined;
+                const li = rec.lastInput;
+                if (li)
+                    d.lastInput = String(li).toLowerCase();
+            }
+            this._applyPositionLabel(d);
         }
     }
 

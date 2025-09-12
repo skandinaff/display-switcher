@@ -56,10 +56,10 @@ This file tracks planned work and staged delivery for the “active connection�
 - **Errors and empty states:**
   - If detection fails or `ddcutil` is absent, show “Unknown input” subtly and keep items actionable.
   - Never block opening menus; degrade gracefully.
-- **Code hooks to add:**
+- **Code hooks used:**
   - `_readInputOne(displayId): Promise<string|null>` — parses VCP 0x60 and returns a mapped code or `null`.
-  - `_updateDisplayMenuChecks(displayId, value)` — updates radio selection for that submenu.
-  - `_stableMonitorKey(d)` — shared helper (serial preferred; fallback `model|id`).
+  - `_updateSelectionMarkers(displayId, value)` — updates radio/check selection for that submenu.
+  - `_monitorKey(d)` — helper for deriving a stable key (serial preferred; fallback `model|id`).
   - Keep references to created submenu menu items per display for quick updates.
 - **Testing steps (manual):**
   - Rescan displays; open a per-display submenu and observe detection updating selection.
