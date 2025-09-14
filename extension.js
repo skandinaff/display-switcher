@@ -44,6 +44,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
         this._settings = settings || null;
         this._extension = extension || null;
+        // Track GLib main loop source ids (timeouts/idles) for cleanup
+        this._sourceIds = new Set();
+        // Enforce single pending timeout/idle at a time per EGO guidance
+        this._pendingTimeoutId = 0;
+        this._pendingIdleId = 0;
         // Per-display input menu items to toggle checkmarks
         // Map: displayId -> Map<vcpCode, PopupMenuItem>
         this._inputItemsByDisplay = new Map();
@@ -60,6 +65,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        // Remove any pending GLib sources we created
+        if (this._sourceIds && this._sourceIds.size > 0) {
+            try {
+                for (const id of this._sourceIds) {
+                    try { GLib.source_remove(id); } catch (_e) {}
+                }
+            } finally {
+                this._sourceIds.clear();
+            }
+        }
+        this._pendingTimeoutId = 0;
+        this._pendingIdleId = 0;
         if (this._settings && this._settingsChangedId) {
             try { this._settings.disconnect(this._settingsChangedId); } catch (_e) {}
             this._settingsChangedId = 0;
@@ -286,6 +303,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             let timedOut = false;
             let timeoutId = 0;
             let proc = null;
+
+            // Remove any previously scheduled timeout/idle before creating a new one
+            if (this._pendingTimeoutId) {
+                try { GLib.source_remove(this._pendingTimeoutId); } catch (_e) {}
+                this._untrackSource(this._pendingTimeoutId);
+                this._pendingTimeoutId = 0;
+            }
+            if (this._pendingIdleId) {
+                try { GLib.source_remove(this._pendingIdleId); } catch (_e) {}
+                this._untrackSource(this._pendingIdleId);
+                this._pendingIdleId = 0;
+            }
             try {
                 proc = Gio.Subprocess.new(
                     argv,
@@ -298,7 +327,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
             const onFinish = (p, res) => {
                 if (timeoutId) {
-                    GLib.source_remove(timeoutId);
+                    try { GLib.source_remove(timeoutId); } catch (_e) {}
+                    this._untrackSource(timeoutId);
+                    if (this._pendingTimeoutId === timeoutId)
+                        this._pendingTimeoutId = 0;
                     timeoutId = 0;
                 }
                 if (timedOut) {
@@ -320,13 +352,31 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 timedOut = true;
                 try { proc.force_exit(); } catch (_e) {}
                 // Let onFinish resolve; if not called, resolve here after a tick
-                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                const idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     resolve({ ok: false, stdout: '', stderr: 'timeout', status: -2 });
+                    this._untrackSource(idleId);
+                    if (this._pendingIdleId === idleId)
+                        this._pendingIdleId = 0;
                     return GLib.SOURCE_REMOVE;
                 });
+                this._trackSource(idleId);
+                this._pendingIdleId = idleId;
+                this._untrackSource(timeoutId);
                 return GLib.SOURCE_REMOVE;
             });
+            this._trackSource(timeoutId);
+            this._pendingTimeoutId = timeoutId;
         });
+    }
+
+    _trackSource(id) {
+        if (!id) return;
+        this._sourceIds.add(id);
+    }
+
+    _untrackSource(id) {
+        if (!id) return;
+        this._sourceIds.delete(id);
     }
 
     _normalizeVcpCode(v) {
@@ -361,6 +411,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _persistMonitors(displays) {
         if (!this._settings)
             return;
+        if (!Array.isArray(displays) || displays.length === 0)
+            return; // Avoid wiping settings when detection returns nothing
         try {
             // Merge with existing records to preserve lastInput
             const existing = this._loadMonitorRecords();
