@@ -57,27 +57,9 @@ You can extend these mappings in `extension.js` if your monitor uses different i
 - Declared support: GNOME Shell 46.
 - Older or newer versions are not claimed; test locally before changing `shell-version` in `metadata.json`.
 
-## Development
-- Code is modern GJS (ES modules, classes). No deprecated modules.
-- Indicator and menu are created in `enable()` and destroyed in `disable()`.
-- Minimal logging; errors fall back gracefully.
-
 ## Troubleshooting
 - “Command not found: ddcutil”: Install `ddcutil` via your distro and ensure it’s in `PATH`.
 - “No displays detected”: Ensure monitors support DDC/CI and that the feature is enabled in the OSD; check user permissions to I²C devices.
 
 ## Acknowledgments
 - Uses the excellent `ddcutil` utility to communicate with monitors over DDC/CI https://github.com/rockowitz/ddcutil
-
-## Publishing Checklist (GNOME Extensions)
-- metadata.json
-  - `uuid`: `display-switcher@skandinaff.github.com`
-  - `name`, `description` set
-  - `shell-version`: `["46"]` (only stable versions and at most one dev version)
-  - `url`: repository link
-- Code hygiene
-  - No objects created before `enable()`; all destroyed in `disable()`
-  - No deprecated modules (Lang/Mainloop/ByteArray)
-  - No GTK/Adwaita imports in `extension.js`; no Shell libraries in preferences (no prefs used)
-  - No excessive logging or telemetry
-  - No bundled binaries or scripts

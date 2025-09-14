@@ -4,5 +4,6 @@
   "description": "Switch monitor input sources using ddcutil",
   "shell-version": ["46"],
   "version": 1,
-  "settings-schema": "org.gnome.shell.extensions.display-switcher"
+  "settings-schema": "org.gnome.shell.extensions.display-switcher",
+  "url": "https://github.com/skandinaff/display-switcher"
 }
