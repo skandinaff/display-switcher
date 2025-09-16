@@ -458,15 +458,26 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _hydrateFromRecords(displays) {
         const records = this._loadMonitorRecords();
         const byId = new Map(records.map(r => [r.id, r]));
-        // Also map by serial when available to improve stability
+        // Also map by serial when available to improve stability, but only when unique
+        const serialCounts = new Map();
+        for (const r of records) {
+            const s = (r.serial || '').trim();
+            if (!s)
+                continue;
+            serialCounts.set(s, (serialCounts.get(s) || 0) + 1);
+        }
         const bySerial = new Map();
         for (const r of records) {
-            if (r.serial && r.serial.length > 0 && !bySerial.has(r.serial))
-                bySerial.set(r.serial, r);
+            const s = (r.serial || '').trim();
+            if (!s)
+                continue;
+            if ((serialCounts.get(s) || 0) === 1 && !bySerial.has(s))
+                bySerial.set(s, r);
         }
         for (const d of displays) {
             let rec = byId.get(d.id);
-            if (!rec && d.serial && d.serial.length > 0)
+            // Fallback to serial mapping only when serial is unique in records
+            if (!rec && d.serial && d.serial.length > 0 && (serialCounts.get(d.serial) === 1))
                 rec = bySerial.get(d.serial);
             if (rec) {
                 const pRaw = (rec.position || '').toLowerCase();
