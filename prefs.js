@@ -4,13 +4,105 @@ import Gtk from 'gi://Gtk';
 
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-function loadMonitors(settings) {
+function normalizePosition(value) {
+    let position = String(value || '').toLowerCase();
+    if (position === 'centre')
+        position = 'center';
+    return (position === 'left' || position === 'center' || position === 'right') ? position : '';
+}
+
+function normalizeVcpCode(value) {
+    if (value === null || typeof value === 'undefined')
+        return '';
+    let code = String(value).toLowerCase();
+    if (/^\d+$/.test(code)) {
+        const n = parseInt(code, 10);
+        if (Number.isFinite(n))
+            code = '0x' + n.toString(16).padStart(2, '0');
+    }
+    return code;
+}
+
+function normalizeSerial(value) {
+    return String(value || '').trim();
+}
+
+function getMonitorIdentityKey(monitor) {
+    if (!monitor)
+        return '';
+    const serial = normalizeSerial(monitor.serial);
+    if (serial)
+        return `serial:${serial}`;
+    return (typeof monitor.id === 'number') ? `id:${monitor.id}` : '';
+}
+
+function findMonitor(list, monitor) {
+    if (!Array.isArray(list) || !monitor)
+        return null;
+    const serial = normalizeSerial(monitor.serial);
+    if (serial) {
+        const serialMatches = list.filter(item => normalizeSerial(item.serial) === serial);
+        if (serialMatches.length === 1)
+            return serialMatches[0];
+    }
+    return list.find(item => item && item.id === monitor.id) || null;
+}
+
+function enforceUniquePositions(list, preferredMonitor = null) {
+    const preferredKey = getMonitorIdentityKey(preferredMonitor);
+    const seen = new Map();
+    for (const monitor of list) {
+        const position = normalizePosition(monitor.position);
+        monitor.position = position;
+        if (!position)
+            continue;
+        if (!seen.has(position)) {
+            seen.set(position, monitor);
+            continue;
+        }
+
+        const currentKey = getMonitorIdentityKey(monitor);
+        const previous = seen.get(position);
+        const previousKey = getMonitorIdentityKey(previous);
+        if (preferredKey && currentKey === preferredKey) {
+            previous.position = '';
+            seen.set(position, monitor);
+        } else if (preferredKey && previousKey === preferredKey) {
+            monitor.position = '';
+        } else {
+            monitor.position = '';
+        }
+    }
+}
+
+function sanitizeMonitors(list, preferredMonitor = null) {
+    const monitors = Array.isArray(list) ? list.map(monitor => {
+        const next = {...monitor};
+        next.position = normalizePosition(next.position);
+        next.lastInput = normalizeVcpCode(next.lastInput);
+        if (Array.isArray(next.usableInputs)) {
+            next.usableInputs = next.usableInputs
+                .map(value => normalizeVcpCode(value))
+                .filter(value => value);
+        }
+        return next;
+    }) : [];
+    enforceUniquePositions(monitors, preferredMonitor);
+    return monitors;
+}
+
+function monitorsEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function loadMonitorsRaw(settings) {
     const arr = settings.get_strv('monitors');
     const list = [];
     for (const s of arr) {
         try {
             const o = JSON.parse(s);
-            list.push(o);
+            if (o && typeof o.id === 'number')
+                list.push(o);
         } catch (_e) {
             // skip
         }
@@ -18,9 +110,14 @@ function loadMonitors(settings) {
     return list;
 }
 
-function saveMonitors(settings, list) {
+function loadMonitors(settings) {
+    return sanitizeMonitors(loadMonitorsRaw(settings));
+}
+
+function saveMonitors(settings, list, preferredMonitor = null) {
     try {
-        const arr = list.map(o => JSON.stringify(o));
+        const sanitized = sanitizeMonitors(list, preferredMonitor);
+        const arr = sanitized.map(o => JSON.stringify(o));
         settings.set_strv('monitors', arr);
     } catch (_e) {
         // ignore
@@ -36,7 +133,10 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         const group = new Adw.PreferencesGroup({ title: _('Monitors') });
         page.add(group);
 
-        let monitors = loadMonitors(settings);
+        const storedMonitors = loadMonitorsRaw(settings);
+        let monitors = sanitizeMonitors(storedMonitors);
+        if (!monitorsEqual(storedMonitors, monitors))
+            saveMonitors(settings, monitors);
 
         if (monitors.length === 0) {
             // PreferencesWindow accepts only Adw.PreferencesPage children.
@@ -92,10 +192,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 const sel = drop.selected;
                 // Update monitors list: 0 -> clear, 1 -> left, 2 -> center, 3 -> right
                 monitors = loadMonitors(settings); // refresh in case changed externally
-                // Find by id first; fall back to serial if needed
-                let target = monitors.find(m => m && m.id === mon.id);
-                if (!target && mon.serial)
-                    target = monitors.find(m => m && m.serial === mon.serial);
+                const target = findMonitor(monitors, mon);
                 if (!target)
                     return;
                 if (sel === 0) {
@@ -107,7 +204,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 } else if (sel === 3) {
                     target.position = 'right';
                 }
-                saveMonitors(settings, monitors);
+                saveMonitors(settings, monitors, target);
             });
 
             row.add_suffix(drop);
@@ -118,9 +215,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             const buttonLabel = new Gtk.Label({ xalign: 0.5 });
             const refreshButtonLabel = () => {
                 const fresh = loadMonitors(settings);
-                let target = fresh.find(m => m && m.id === mon.id);
-                if (!target && mon.serial)
-                    target = fresh.find(m => m && m.serial === mon.serial);
+                const target = findMonitor(fresh, mon);
                 const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
                 const effective = (list && list.length > 0) ? list : ALL_CODES;
                 const text = effective.map(c => INPUT_LABELS.get(c) || c).join(', ');
@@ -147,9 +242,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
 
                 const isChecked = () => {
                     const fresh = loadMonitors(settings);
-                    let target = fresh.find(m => m && m.id === mon.id);
-                    if (!target && mon.serial)
-                        target = fresh.find(m => m && m.serial === mon.serial);
+                    const target = findMonitor(fresh, mon);
                     const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
                     if (!list || list.length === 0) // empty means all enabled
                         return true;
@@ -163,9 +256,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
 
                 const toggle = () => {
                     const fresh = loadMonitors(settings);
-                    let target = fresh.find(m => m && m.id === mon.id);
-                    if (!target && mon.serial)
-                        target = fresh.find(m => m && m.serial === mon.serial);
+                    const target = findMonitor(fresh, mon);
                     if (!target)
                         return;
                     const list = Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
@@ -176,7 +267,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     else
                         list.push(code);
                     target.usableInputs = list;
-                    saveMonitors(settings, fresh);
+                    saveMonitors(settings, fresh, target);
                     updateVisual();
                     refreshButtonLabel();
                 };

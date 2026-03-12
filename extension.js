@@ -29,6 +29,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 // VCP 0x60 (Input Select) common values we expose:
 // 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
+const ACTIVE_INPUT_REFRESH_STALE_MS = 15000;
+const MONITOR_CHANGE_RESCAN_DELAY_MS = 1500;
 
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
@@ -52,6 +54,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Per-display input menu items to toggle checkmarks
         // Map: displayId -> Map<vcpCode, PopupMenuItem>
         this._inputItemsByDisplay = new Map();
+        this._lastActiveInputRefreshUsec = 0;
+        this._activeInputRefreshPromise = null;
+        this._displayRefreshTimeoutId = 0;
+
+        if (this._settings)
+            this._sanitizeStoredMonitorRecords();
 
         this._displays = this._detectDisplays();
         if (this._settings) {
@@ -61,7 +69,15 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 this._buildMenu();
             });
         }
+        this._menuOpenChangedId = this.menu.connect('open-state-changed', (_menu, isOpen) => {
+            if (isOpen)
+                this._maybeRefreshActiveInputs(false);
+        });
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            this._scheduleDisplayRefresh();
+        });
         this._buildMenu();
+        this._maybeRefreshActiveInputs(true);
     }
 
     destroy() {
@@ -77,9 +93,22 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         }
         this._pendingTimeoutId = 0;
         this._pendingIdleId = 0;
+        if (this._displayRefreshTimeoutId) {
+            try { GLib.source_remove(this._displayRefreshTimeoutId); } catch (_e) {}
+            this._untrackSource(this._displayRefreshTimeoutId);
+            this._displayRefreshTimeoutId = 0;
+        }
         if (this._settings && this._settingsChangedId) {
             try { this._settings.disconnect(this._settingsChangedId); } catch (_e) {}
             this._settingsChangedId = 0;
+        }
+        if (this._menuOpenChangedId) {
+            try { this.menu.disconnect(this._menuOpenChangedId); } catch (_e) {}
+            this._menuOpenChangedId = 0;
+        }
+        if (this._monitorsChangedId) {
+            try { Main.layoutManager.disconnect(this._monitorsChangedId); } catch (_e) {}
+            this._monitorsChangedId = 0;
         }
         super.destroy();
     }
@@ -135,11 +164,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (this._displays.length > 0)
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addAction(_('Rescan Displays'), () => {
-            this._displays = this._detectDisplays();
-            this._buildMenu();
-            // Also refresh active inputs to update checkmarks
-            // Fire and forget; runs asynchronously without blocking the UI
-            this._rescanActiveInputs().catch(() => {});
+            this._refreshDisplays(true);
         });
         if (this._extension && typeof this._extension.openPreferences === 'function') {
             this.menu.addAction(_('Settings…'), () => {
@@ -153,18 +178,23 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         const d = this._displays.find(x => x.id === display);
         if (d && !this._isInputUsable(d, vcpValue))
             return;
-        this._runSetVcp(vcpValue, display);
+        this._runSetVcp(vcpValue, d || {id: display});
         if (d) {
             // Optimistically persist selection to keep UI responsive
             d.lastInput = String(vcpValue).toLowerCase();
-            this._saveLastInputForDisplay(d.id, d.lastInput);
+            this._saveLastInputForDisplay(d, d.lastInput);
             this._updateSelectionMarkers(d.id, d.lastInput);
+            this._lastActiveInputRefreshUsec = GLib.get_monotonic_time();
         }
     }
 
     _runSetVcp(vcpValue, display) {
-        const cmd = `ddcutil -d ${display} setvcp 60 ${vcpValue}`;
-        GLib.spawn_command_line_async(cmd);
+        const argv = ['ddcutil', ...this._buildDisplayArgs(display), 'setvcp', '60', String(vcpValue)];
+        try {
+            Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+        } catch (_e) {
+            // Ignore failures; the optimistic UI state will be corrected on refresh.
+        }
     }
 
     _detectDisplays() {
@@ -256,8 +286,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     }
 
     // Read current input for a single display via ddcutil getvcp 60
-    async _readInputOne(displayId) {
-        const args = ['ddcutil', '-d', String(displayId), 'getvcp', '60'];
+    async _readInputOne(display) {
+        const args = ['ddcutil', ...this._buildDisplayArgs(display), 'getvcp', '60'];
+        if (args.length < 4)
+            return { code: null, raw: '' };
         // ddcutil can take 1–3s; allow generous timeout
         const { ok, stdout } = await this._runCommand(args, 5000);
         if (!ok)
@@ -286,11 +318,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     async _rescanActiveInputs() {
         const displays = Array.isArray(this._displays) ? [...this._displays] : [];
         for (const d of displays) {
-            const { code } = await this._readInputOne(d.id);
+            const { code } = await this._readInputOne(d);
             if (!code)
                 continue;
             d.lastInput = String(code).toLowerCase();
-            this._saveLastInputForDisplay(d.id, d.lastInput);
+            this._saveLastInputForDisplay(d, d.lastInput);
             this._updateSelectionMarkers(d.id, d.lastInput);
         }
         // Save merged monitor records reflecting any new lastInput values
@@ -391,6 +423,190 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         return code;
     }
 
+    _normalizePosition(value) {
+        let position = String(value || '').toLowerCase();
+        if (position === 'centre')
+            position = 'center';
+        return (position === 'left' || position === 'center' || position === 'right') ? position : '';
+    }
+
+    _normalizeSerial(value) {
+        return String(value || '').trim();
+    }
+
+    _getRecordIdentityKey(item) {
+        if (!item)
+            return '';
+        const serial = this._normalizeSerial(item.serial);
+        if (serial)
+            return `serial:${serial}`;
+        const id = (typeof item === 'number') ? item : item.id;
+        return (typeof id === 'number') ? `id:${id}` : '';
+    }
+
+    _findMatchingRecord(records, item) {
+        if (!Array.isArray(records) || !item)
+            return null;
+        const serial = this._normalizeSerial(typeof item === 'object' ? item.serial : '');
+        if (serial) {
+            const serialMatches = records.filter(r => this._normalizeSerial(r.serial) === serial);
+            if (serialMatches.length === 1)
+                return serialMatches[0];
+        }
+        const id = (typeof item === 'number') ? item : item.id;
+        if (typeof id !== 'number')
+            return null;
+        return records.find(r => r && r.id === id) || null;
+    }
+
+    _enforceUniquePositions(records, preferredIdentity = '') {
+        const seen = new Map();
+        for (const record of records) {
+            const position = this._normalizePosition(record.position);
+            record.position = position;
+            if (!position)
+                continue;
+            if (!seen.has(position)) {
+                seen.set(position, record);
+                continue;
+            }
+
+            const currentIdentity = this._getRecordIdentityKey(record);
+            const previousRecord = seen.get(position);
+            const previousIdentity = this._getRecordIdentityKey(previousRecord);
+            if (preferredIdentity && currentIdentity === preferredIdentity) {
+                previousRecord.position = '';
+                seen.set(position, record);
+            } else if (preferredIdentity && previousIdentity === preferredIdentity) {
+                record.position = '';
+            } else {
+                record.position = '';
+            }
+        }
+    }
+
+    _sanitizeMonitorRecords(records, preferredItem = null) {
+        const sanitized = Array.isArray(records) ? records.map(record => {
+            const next = {...record};
+            next.position = this._normalizePosition(next.position);
+            next.lastInput = this._normalizeVcpCode(next.lastInput);
+            if (Array.isArray(next.usableInputs)) {
+                next.usableInputs = next.usableInputs
+                    .map(v => this._normalizeVcpCode(v))
+                    .filter(v => v);
+            }
+            return next;
+        }) : [];
+        this._enforceUniquePositions(sanitized, this._getRecordIdentityKey(preferredItem));
+        return sanitized;
+    }
+
+    _monitorRecordsEqual(a, b) {
+        return JSON.stringify(a) === JSON.stringify(b);
+    }
+
+    _loadMonitorRecordsRaw() {
+        if (!this._settings)
+            return [];
+        try {
+            const arr = this._settings.get_strv('monitors');
+            const out = [];
+            for (const s of arr) {
+                try {
+                    const o = JSON.parse(s);
+                    if (o && typeof o.id === 'number')
+                        out.push(o);
+                } catch (_e) {}
+            }
+            return out;
+        } catch (_e) {
+            return [];
+        }
+    }
+
+    _sanitizeStoredMonitorRecords() {
+        if (!this._settings)
+            return;
+        const raw = this._loadMonitorRecordsRaw();
+        const sanitized = this._sanitizeMonitorRecords(raw);
+        if (this._monitorRecordsEqual(raw, sanitized))
+            return;
+        try {
+            this._settings.set_strv('monitors', sanitized.map(r => JSON.stringify(r)));
+        } catch (_e) {}
+    }
+
+    _serialIsUniqueAmongDisplays(serial) {
+        if (!serial)
+            return false;
+        let count = 0;
+        for (const display of (this._displays || [])) {
+            if (this._normalizeSerial(display.serial) === serial)
+                count += 1;
+        }
+        return count === 1;
+    }
+
+    _buildDisplayArgs(display) {
+        if (!display)
+            return [];
+        const serial = this._normalizeSerial(typeof display === 'object' ? display.serial : '');
+        if (serial && this._serialIsUniqueAmongDisplays(serial))
+            return ['--sn', serial];
+        const id = (typeof display === 'number') ? display : display.id;
+        return (typeof id === 'number') ? ['--display', String(id)] : [];
+    }
+
+    _isActiveInputRefreshStale(maxAgeMs = ACTIVE_INPUT_REFRESH_STALE_MS) {
+        if (!this._lastActiveInputRefreshUsec)
+            return true;
+        const ageUs = GLib.get_monotonic_time() - this._lastActiveInputRefreshUsec;
+        return ageUs >= (maxAgeMs * 1000);
+    }
+
+    _maybeRefreshActiveInputs(force = false) {
+        if (!this._displays || this._displays.length === 0)
+            return null;
+        if (this._activeInputRefreshPromise)
+            return this._activeInputRefreshPromise;
+        if (!force && !this._isActiveInputRefreshStale())
+            return null;
+
+        this._activeInputRefreshPromise = this._rescanActiveInputs()
+            .catch(() => {})
+            .finally(() => {
+                this._lastActiveInputRefreshUsec = GLib.get_monotonic_time();
+                this._activeInputRefreshPromise = null;
+            });
+        return this._activeInputRefreshPromise;
+    }
+
+    _scheduleDisplayRefresh() {
+        if (this._displayRefreshTimeoutId) {
+            try { GLib.source_remove(this._displayRefreshTimeoutId); } catch (_e) {}
+            this._untrackSource(this._displayRefreshTimeoutId);
+            this._displayRefreshTimeoutId = 0;
+        }
+        this._displayRefreshTimeoutId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            MONITOR_CHANGE_RESCAN_DELAY_MS,
+            () => {
+                this._untrackSource(this._displayRefreshTimeoutId);
+                this._displayRefreshTimeoutId = 0;
+                this._refreshDisplays(true);
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+        this._trackSource(this._displayRefreshTimeoutId);
+    }
+
+    _refreshDisplays(forceInputRefresh = false) {
+        this._displays = this._detectDisplays();
+        this._buildMenu();
+        if (forceInputRefresh)
+            this._maybeRefreshActiveInputs(true);
+    }
+
     _applyPositionLabel(d) {
         if (!d || !d.labelBase)
             return;
@@ -414,75 +630,38 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (!Array.isArray(displays) || displays.length === 0)
             return; // Avoid wiping settings when detection returns nothing
         try {
-            // Merge with existing records to preserve lastInput
             const existing = this._loadMonitorRecords();
-            const byId = new Map(existing.map(r => [r.id, r]));
             const merged = [];
             for (const d of displays) {
-                const prev = byId.get(d.id) || {};
+                const prev = this._findMatchingRecord(existing, d) || {};
                 const rec = {
                     id: d.id,
                     model: d.model || '',
                     serial: d.serial || '',
-                    position: d.position || '',
+                    position: this._normalizePosition(d.position) || this._normalizePosition(prev.position),
                     lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
                     usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
             }
-            this._settings.set_strv('monitors', merged.map(r => JSON.stringify(r)));
+            const sanitized = this._sanitizeMonitorRecords(merged);
+            this._settings.set_strv('monitors', sanitized.map(r => JSON.stringify(r)));
         } catch (_e) {
             // Silently ignore if schema missing or not compiled
         }
     }
 
     _loadMonitorRecords() {
-        if (!this._settings)
-            return [];
-        try {
-            const arr = this._settings.get_strv('monitors');
-            const out = [];
-            for (const s of arr) {
-                try {
-                    const o = JSON.parse(s);
-                    if (o && typeof o.id === 'number')
-                        out.push(o);
-                } catch (_e) {}
-            }
-            return out;
-        } catch (_e) {
-            return [];
-        }
+        return this._sanitizeMonitorRecords(this._loadMonitorRecordsRaw());
     }
 
     _hydrateFromRecords(displays) {
         const records = this._loadMonitorRecords();
-        const byId = new Map(records.map(r => [r.id, r]));
-        // Also map by serial when available to improve stability, but only when unique
-        const serialCounts = new Map();
-        for (const r of records) {
-            const s = (r.serial || '').trim();
-            if (!s)
-                continue;
-            serialCounts.set(s, (serialCounts.get(s) || 0) + 1);
-        }
-        const bySerial = new Map();
-        for (const r of records) {
-            const s = (r.serial || '').trim();
-            if (!s)
-                continue;
-            if ((serialCounts.get(s) || 0) === 1 && !bySerial.has(s))
-                bySerial.set(s, r);
-        }
         for (const d of displays) {
-            let rec = byId.get(d.id);
-            // Fallback to serial mapping only when serial is unique in records
-            if (!rec && d.serial && d.serial.length > 0 && (serialCounts.get(d.serial) === 1))
-                rec = bySerial.get(d.serial);
+            const rec = this._findMatchingRecord(records, d);
             if (rec) {
-                const pRaw = (rec.position || '').toLowerCase();
-                const p = (pRaw === 'centre') ? 'center' : pRaw; // accept British spelling
-                d.position = (p === 'left' || p === 'center' || p === 'right') ? p : undefined;
+                const position = this._normalizePosition(rec.position);
+                d.position = position || undefined;
                 const li = rec.lastInput;
                 if (li)
                     d.lastInput = String(li).toLowerCase();
@@ -499,14 +678,26 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             return;
         const norm = this._normalizeVcpCode(code);
         const recs = this._loadMonitorRecords();
-        for (const r of recs) {
-            if (r.id === id) {
-                r.lastInput = norm;
-                break;
-            }
+        let target = this._findMatchingRecord(recs, id);
+        if (!target && typeof id === 'object' && typeof id.id === 'number') {
+            target = {
+                id: id.id,
+                model: id.model || '',
+                serial: id.serial || '',
+                position: this._normalizePosition(id.position),
+                lastInput: '',
+                usableInputs: Array.isArray(id.usableInputs)
+                    ? id.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v)
+                    : undefined,
+            };
+            recs.push(target);
         }
+        if (!target)
+            return;
+        target.lastInput = norm;
         try {
-            this._settings.set_strv('monitors', recs.map(r => JSON.stringify(r)));
+            const sanitized = this._sanitizeMonitorRecords(recs, id);
+            this._settings.set_strv('monitors', sanitized.map(r => JSON.stringify(r)));
         } catch (_e) {}
     }
 
