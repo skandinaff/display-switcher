@@ -14,6 +14,9 @@ This roadmap tracks completed work and upcoming features.
 - Menu structure refined per display with detection and relabeling by position.
 
 ## Next: Usable Inputs (per monitor)
+- Add version number
+- Add marker of currently connected display
+- Add display identifier
 - Schema/state: extend monitor records with `usableInputs: string[]` storing VCP input codes (e.g., `['0x11','0x0f','0x1b']`). Default when absent: all inputs usable.
 - Preferences UI: per-monitor checkboxes for HDMI‑1, DisplayPort‑1, and USB‑C that persist to `usableInputs`.
 - Indicator behavior: gray out and disable non‑usable inputs; ignore clicks on them. Do not show a selection ornament on disabled items.
