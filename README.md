@@ -17,17 +17,45 @@ Switch monitor input sources directly from the GNOME top bar using `ddcutil` (VC
 - `ddcutil` available in `PATH`
   - Ensure your user has permission to access DDC/I²C (e.g., udev rules or membership in the `i2c` group depending on your distro)
 
-## Install (from source)
-1. Clone or download this repository.
-2. Create the extension folder:
-   - `~/.local/share/gnome-shell/extensions/display-switcher@skandinaff.github.com/`
-3. Copy the files: `extension.js`, `metadata.json`, `stylesheet.css`, and the `schemas/` folder into that directory.
-4. Optional but recommended: compile the schema so the extension can persist detected monitors and positions for future use.
-   - `glib-compile-schemas ~/.local/share/gnome-shell/extensions/display-switcher@skandinaff.github.com/schemas`
-4. Restart GNOME Shell:
+## Development Workflow
+Use one repo and generate two builds from it:
+
+- Dev build: `display-switcher-dev@skandinaff.github.com`
+- Release build: `display-switcher@skandinaff.github.com`
+
+This prevents the published extension from overwriting your local dev copy.
+
+### Local Dev Install
+1. Work in the repo normally.
+2. Build, install, and refresh the dev variant:
+   - `make dev-refresh`
+3. If GNOME has not seen the dev UUID in the current session yet, log out and back in once.
+4. After that, `make dev-refresh` is the normal one-command local workflow.
+
+If you only want to rebuild/install without touching GNOME's enabled-extension state:
+   - `make dev-install`
+5. Enable the dev extension manually if needed:
+   - `gnome-extensions enable display-switcher-dev@skandinaff.github.com`
+6. Restart GNOME Shell if needed:
    - Xorg: `Alt`+`F2`, type `r`, press `Enter`.
    - Wayland: log out and back in.
-5. Enable via Extensions app or `gnome-extensions enable display-switcher@skandinaff.github.com`.
+
+The generated install lives under `build/display-switcher-dev@skandinaff.github.com/`, and `make dev-install` copies it into `~/.local/share/gnome-shell/extensions/`.
+
+### Release Packaging
+1. Bump `VERSION` to the next store version.
+2. Build the release zip:
+   - `make pack-release`
+   - or `make pack-release VERSION=4`
+3. Upload the zip from `build/dist/` to extensions.gnome.org.
+
+`make pack` remains as an alias for `make pack-release`.
+
+## Dev Docs
+Development-only notes such as the roadmap live under `dev-docs/` and are not packaged into the extension build outputs.
+
+## Install (manual)
+If you do want to install manually without the build targets, the installed folder name and the `uuid` inside `metadata.json` must match exactly.
 
 ## Usage
 - Click the panel icon and choose an input for a specific display or all displays.

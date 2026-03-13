@@ -1,9 +1,9 @@
 {
-  "uuid": "display-switcher@skandinaff.github.com",
-  "name": "Display Switch",
+  "uuid": "@UUID@",
+  "name": "@NAME@",
   "description": "Switch monitor input sources using ddcutil",
   "shell-version": ["46"],
-  "version": 3,
+  "version": @VERSION@,
   "settings-schema": "org.gnome.shell.extensions.display-switcher",
   "url": "https://github.com/skandinaff/display-switcher"
 }
