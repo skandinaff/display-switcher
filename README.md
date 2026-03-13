@@ -27,15 +27,20 @@ This prevents the published extension from overwriting your local dev copy.
 
 ### Local Dev Install
 1. Work in the repo normally.
-2. Build and install the dev variant:
+2. Build, install, and refresh the dev variant:
+   - `make dev-refresh`
+3. If GNOME has not seen the dev UUID in the current session yet, log out and back in once.
+4. After that, `make dev-refresh` is the normal one-command local workflow.
+
+If you only want to rebuild/install without touching GNOME's enabled-extension state:
    - `make dev-install`
-3. Enable the dev extension:
+5. Enable the dev extension manually if needed:
    - `gnome-extensions enable display-switcher-dev@skandinaff.github.com`
-4. Restart GNOME Shell if needed:
+6. Restart GNOME Shell if needed:
    - Xorg: `Alt`+`F2`, type `r`, press `Enter`.
    - Wayland: log out and back in.
 
-The generated install lives under `build/display-switcher-dev@skandinaff.github.com/` and is symlinked into `~/.local/share/gnome-shell/extensions/`.
+The generated install lives under `build/display-switcher-dev@skandinaff.github.com/`, and `make dev-install` copies it into `~/.local/share/gnome-shell/extensions/`.
 
 ### Release Packaging
 1. Bump `VERSION` to the next store version.
@@ -45,6 +50,9 @@ The generated install lives under `build/display-switcher-dev@skandinaff.github.
 3. Upload the zip from `build/dist/` to extensions.gnome.org.
 
 `make pack` remains as an alias for `make pack-release`.
+
+## Dev Docs
+Development-only notes such as the roadmap live under `dev-docs/` and are not packaged into the extension build outputs.
 
 ## Install (manual)
 If you do want to install manually without the build targets, the installed folder name and the `uuid` inside `metadata.json` must match exactly.

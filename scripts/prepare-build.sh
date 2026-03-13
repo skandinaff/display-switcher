@@ -37,7 +37,7 @@ fi
 mkdir -p "$OUT_DIR"
 mkdir -p "$OUT_DIR/schemas"
 
-for file in extension.js prefs.js README.md LICENSE ROADMAP.md; do
+for file in extension.js prefs.js README.md LICENSE; do
     cp "$REPO_DIR/$file" "$OUT_DIR/$file"
 done
 
