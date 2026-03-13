@@ -13,6 +13,7 @@ This roadmap tracks completed work and upcoming features.
 - Persistence of per-display state in `monitors` key (position, lastInput).
 - Menu structure refined per display with detection and relabeling by position.
 - Preferences window shows the extension version.
+- Preferences can mark which input is physically connected to this computer, and the menu shows that input with a plug marker.
 
 ## Next: Usable Inputs (per monitor)
 - Add marker of currently connected display

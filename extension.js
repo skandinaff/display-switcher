@@ -31,6 +31,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
 const ACTIVE_INPUT_REFRESH_STALE_MS = 15000;
 const MONITOR_CHANGE_RESCAN_DELAY_MS = 1500;
+const CONNECTED_INPUT_MARKER = '  🔌';
 
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
@@ -117,6 +118,23 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this.menu.removeAll();
     }
 
+    _getInputLabel(code) {
+        const norm = this._normalizeVcpCode(code);
+        if (norm === '0x11')
+            return _('HDMI');
+        if (norm === '0x0f')
+            return _('DP');
+        if (norm === '0x1b')
+            return _('USB-C');
+        return String(code || '');
+    }
+
+    _getInputMenuLabel(display, code) {
+        const label = this._getInputLabel(code);
+        const connectedInput = display ? this._normalizeVcpCode(display.connectedInput) : '';
+        return connectedInput === this._normalizeVcpCode(code) ? `${label}${CONNECTED_INPUT_MARKER}` : label;
+    }
+
     _buildMenu() {
         this._clearMenu();
         this._inputItemsByDisplay.clear();
@@ -136,17 +154,17 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             // Build input options and wire up dynamic checkmarks based on persisted last input
             const items = new Map();
 
-            const itemHdmi = new PopupMenu.PopupMenuItem(_('HDMI'));
+            const itemHdmi = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x11'));
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
             sub.menu.addMenuItem(itemHdmi);
             items.set('0x11', itemHdmi);
 
-            const itemDp = new PopupMenu.PopupMenuItem(_('DP'));
+            const itemDp = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x0f'));
             itemDp.connect('activate', () => this._switchOne('0x0f', d.id));
             sub.menu.addMenuItem(itemDp);
             items.set('0x0f', itemDp);
 
-            const itemUsbC = new PopupMenu.PopupMenuItem(_('USB-C'));
+            const itemUsbC = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x1b'));
             itemUsbC.connect('activate', () => this._switchOne('0x1b', d.id));
             sub.menu.addMenuItem(itemUsbC);
             items.set('0x1b', itemUsbC);
@@ -490,6 +508,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             const next = {...record};
             next.position = this._normalizePosition(next.position);
             next.lastInput = this._normalizeVcpCode(next.lastInput);
+            next.connectedInput = this._normalizeVcpCode(next.connectedInput);
             if (Array.isArray(next.usableInputs)) {
                 next.usableInputs = next.usableInputs
                     .map(v => this._normalizeVcpCode(v))
@@ -640,6 +659,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     serial: d.serial || '',
                     position: this._normalizePosition(d.position) || this._normalizePosition(prev.position),
                     lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
+                    connectedInput: (typeof d.connectedInput !== 'undefined' && d.connectedInput !== null && String(d.connectedInput)) || prev.connectedInput || '',
                     usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
@@ -665,6 +685,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 const li = rec.lastInput;
                 if (li)
                     d.lastInput = String(li).toLowerCase();
+                const connectedInput = this._normalizeVcpCode(rec.connectedInput);
+                if (connectedInput)
+                    d.connectedInput = connectedInput;
+                else
+                    delete d.connectedInput;
                 if (Array.isArray(rec.usableInputs)) {
                     d.usableInputs = rec.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v);
                 }
@@ -686,6 +711,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 serial: id.serial || '',
                 position: this._normalizePosition(id.position),
                 lastInput: '',
+                connectedInput: this._normalizeVcpCode(id.connectedInput),
                 usableInputs: Array.isArray(id.usableInputs)
                     ? id.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v)
                     : undefined,

@@ -80,6 +80,7 @@ function sanitizeMonitors(list, preferredMonitor = null) {
         const next = {...monitor};
         next.position = normalizePosition(next.position);
         next.lastInput = normalizeVcpCode(next.lastInput);
+        next.connectedInput = normalizeVcpCode(next.connectedInput);
         if (Array.isArray(next.usableInputs)) {
             next.usableInputs = next.usableInputs
                 .map(value => normalizeVcpCode(value))
@@ -129,6 +130,13 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
         window.set_default_size(520, 460);
         const settings = this.getSettings();
         const version = String(this.metadata.version ?? _('Unknown'));
+        const INPUT_CODES = ['0x11', '0x0f', '0x1b'];
+        const INPUT_LABELS = new Map([
+            ['0x11', _('HDMI')],
+            ['0x0f', _('DP')],
+            ['0x1b', _('USB-C')],
+        ]);
+        const CONNECTED_OPTIONS = [_('Not set'), _('HDMI'), _('DP'), _('USB-C')];
 
         const page = new Adw.PreferencesPage({ title: _('Display Switcher') });
         const monitorsGroup = new Adw.PreferencesGroup({ title: _('Monitors') });
@@ -150,15 +158,15 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             emptyRow.add_prefix(icon);
             monitorsGroup.add(emptyRow);
         } else {
+            const connectionGroup = new Adw.PreferencesGroup({
+                title: _('This Computer'),
+                description: _('Mark which monitor input is physically connected to this computer. The menu shows that input with a plug marker.'),
+            });
+            page.add(connectionGroup);
+
             // Build a row per monitor with inline ID, position dropdown, and usable inputs dropdown
             // Order for position: Unknown, Left, Center, Right
             const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
-            const INPUT_LABELS = new Map([
-                ['0x11', _('HDMI')],
-                ['0x0f', _('DP')],
-                ['0x1b', _('USB-C')],
-            ]);
-            const ALL_CODES = ['0x11', '0x0f', '0x1b'];
 
             for (const mon of monitors) {
                 const row = new Adw.ActionRow();
@@ -215,7 +223,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     const fresh = loadMonitors(settings);
                     const target = findMonitor(fresh, mon);
                     const list = target && Array.isArray(target.usableInputs) ? target.usableInputs.map(v => String(v).toLowerCase()) : [];
-                    const effective = (list && list.length > 0) ? list : ALL_CODES;
+                    const effective = (list && list.length > 0) ? list : INPUT_CODES;
                     const text = effective.map(c => INPUT_LABELS.get(c) || c).join(', ');
                     buttonLabel.label = text.length > 0 ? text : _('All');
                 };
@@ -279,12 +287,59 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     return lb;
                 };
 
-                for (const code of ALL_CODES)
+                for (const code of INPUT_CODES)
                     listBox.append(buildRow(code));
 
                 inputsButton.popover = popover;
                 row.add_suffix(inputsButton);
                 monitorsGroup.add(row);
+
+                const connectionRow = new Adw.ActionRow({
+                    title,
+                    subtitle: _('This computer is connected via'),
+                });
+                const connectionOptions = new Gtk.StringList();
+                for (const option of CONNECTED_OPTIONS)
+                    connectionOptions.append(option);
+
+                const connectionDrop = new Gtk.DropDown({ model: connectionOptions });
+                connectionDrop.valign = Gtk.Align.CENTER;
+
+                const refreshConnectionSelection = () => {
+                    const fresh = loadMonitors(settings);
+                    const target = findMonitor(fresh, mon);
+                    const connectedInput = normalizeVcpCode(target ? target.connectedInput : '');
+                    let selected = 0;
+                    if (connectedInput === '0x11')
+                        selected = 1;
+                    else if (connectedInput === '0x0f')
+                        selected = 2;
+                    else if (connectedInput === '0x1b')
+                        selected = 3;
+                    connectionDrop.selected = selected;
+                };
+                refreshConnectionSelection();
+
+                connectionDrop.connect('notify::selected', () => {
+                    const fresh = loadMonitors(settings);
+                    const target = findMonitor(fresh, mon);
+                    if (!target)
+                        return;
+
+                    if (connectionDrop.selected === 1)
+                        target.connectedInput = '0x11';
+                    else if (connectionDrop.selected === 2)
+                        target.connectedInput = '0x0f';
+                    else if (connectionDrop.selected === 3)
+                        target.connectedInput = '0x1b';
+                    else
+                        target.connectedInput = '';
+
+                    saveMonitors(settings, fresh);
+                });
+
+                connectionRow.add_suffix(connectionDrop);
+                connectionGroup.add(connectionRow);
             }
         }
 
