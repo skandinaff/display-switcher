@@ -17,17 +17,37 @@ Switch monitor input sources directly from the GNOME top bar using `ddcutil` (VC
 - `ddcutil` available in `PATH`
   - Ensure your user has permission to access DDC/I²C (e.g., udev rules or membership in the `i2c` group depending on your distro)
 
-## Install (from source)
-1. Clone or download this repository.
-2. Create the extension folder:
-   - `~/.local/share/gnome-shell/extensions/display-switcher@skandinaff.github.com/`
-3. Copy the files: `extension.js`, `metadata.json`, `stylesheet.css`, and the `schemas/` folder into that directory.
-4. Optional but recommended: compile the schema so the extension can persist detected monitors and positions for future use.
-   - `glib-compile-schemas ~/.local/share/gnome-shell/extensions/display-switcher@skandinaff.github.com/schemas`
-4. Restart GNOME Shell:
+## Development Workflow
+Use one repo and generate two builds from it:
+
+- Dev build: `display-switcher-dev@skandinaff.github.com`
+- Release build: `display-switcher@skandinaff.github.com`
+
+This prevents the published extension from overwriting your local dev copy.
+
+### Local Dev Install
+1. Work in the repo normally.
+2. Build and install the dev variant:
+   - `make dev-install`
+3. Enable the dev extension:
+   - `gnome-extensions enable display-switcher-dev@skandinaff.github.com`
+4. Restart GNOME Shell if needed:
    - Xorg: `Alt`+`F2`, type `r`, press `Enter`.
    - Wayland: log out and back in.
-5. Enable via Extensions app or `gnome-extensions enable display-switcher@skandinaff.github.com`.
+
+The generated install lives under `build/display-switcher-dev@skandinaff.github.com/` and is symlinked into `~/.local/share/gnome-shell/extensions/`.
+
+### Release Packaging
+1. Bump `VERSION` to the next store version.
+2. Build the release zip:
+   - `make pack-release`
+   - or `make pack-release VERSION=4`
+3. Upload the zip from `build/dist/` to extensions.gnome.org.
+
+`make pack` remains as an alias for `make pack-release`.
+
+## Install (manual)
+If you do want to install manually without the build targets, the installed folder name and the `uuid` inside `metadata.json` must match exactly.
 
 ## Usage
 - Click the panel icon and choose an input for a specific display or all displays.
