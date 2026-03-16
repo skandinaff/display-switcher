@@ -223,11 +223,11 @@ async function detectDisplaysAsync() {
     let result = await runCommand(['ddcutil', 'detect'], 5000);
     let displays = parseDetectedDisplays(result.stdout);
     if (result.ok && displays.length > 0)
-        return displays;
+        return {ok: true, displays};
 
     result = await runCommand(['ddcutil', 'detect', '--terse'], 5000);
     if (!result.ok)
-        return [];
+        return {ok: false, displays: []};
 
     const terseDisplays = [];
     for (const line of String(result.stdout || '').split('\n')) {
@@ -235,7 +235,7 @@ async function detectDisplaysAsync() {
         if (matchDisplay)
             terseDisplays.push({id: parseInt(matchDisplay[1], 10), model: '', serial: ''});
     }
-    return terseDisplays;
+    return {ok: true, displays: terseDisplays};
 }
 
 function getHostMonitorKey(connector, vendor, product, serial) {
@@ -305,24 +305,45 @@ async function loadActiveHostMonitorsAsync() {
                 '/org/gnome/Mutter/DisplayConfig'
             );
         } catch (_e) {
-            resolve([]);
+            resolve({ok: false, activeHostMonitors: []});
             return;
         }
 
         proxy.GetCurrentStateRemote((result, err) => {
             if (err) {
-                resolve([]);
+                resolve({ok: false, activeHostMonitors: []});
                 return;
             }
 
             try {
                 const [, monitors, logicalMonitors] = result;
-                resolve(extractActiveHostMonitors(monitors, logicalMonitors));
+                resolve({
+                    ok: true,
+                    activeHostMonitors: extractActiveHostMonitors(monitors, logicalMonitors),
+                });
             } catch (_e) {
-                resolve([]);
+                resolve({ok: false, activeHostMonitors: []});
             }
         });
     });
+}
+
+function getDisplayNameCandidates(display) {
+    const candidates = [];
+    const seen = new Set();
+    for (const value of [display?.model, display?.labelBase, display?.label]) {
+        const normalized = normalizeDisplayName(value);
+        if (!normalized || seen.has(normalized))
+            continue;
+        seen.add(normalized);
+        candidates.push(normalized);
+    }
+    return candidates;
+}
+
+function getMergedDetectedDisplay(display, knownMonitors) {
+    const matched = findMonitor(knownMonitors, display);
+    return matched ? {...matched, ...display} : display;
 }
 
 function findAutoConnectedInput(display, activeHostMonitors) {
@@ -336,9 +357,9 @@ function findAutoConnectedInput(display, activeHostMonitors) {
             return connectorToAutoInputCode(serialMatches[0].connector);
     }
 
-    const model = normalizeDisplayName(display.model || '');
-    if (model) {
-        const modelMatches = activeHostMonitors.filter(m => normalizeDisplayName(m.displayName) === model);
+    const names = getDisplayNameCandidates(display);
+    for (const name of names) {
+        const modelMatches = activeHostMonitors.filter(m => normalizeDisplayName(m.displayName) === name);
         if (modelMatches.length === 1)
             return connectorToAutoInputCode(modelMatches[0].connector);
     }
@@ -346,19 +367,25 @@ function findAutoConnectedInput(display, activeHostMonitors) {
     return '';
 }
 
-async function detectAutoConnectedInputsAsync() {
-    const [displays, activeHostMonitors] = await Promise.all([
+async function detectAutoConnectedInputsAsync(knownMonitors = []) {
+    const [displayResult, hostResult] = await Promise.all([
         detectDisplaysAsync(),
         loadActiveHostMonitorsAsync(),
     ]);
 
     const detected = new Map();
-    for (const display of displays) {
-        const inputCode = findAutoConnectedInput(display, activeHostMonitors);
+    for (const display of displayResult.displays) {
+        const mergedDisplay = getMergedDetectedDisplay(display, knownMonitors);
+        const inputCode = findAutoConnectedInput(mergedDisplay, hostResult.activeHostMonitors);
         if (inputCode)
             detected.set(getMonitorIdentityKey(display), inputCode);
     }
-    return detected;
+    return {
+        detected,
+        ok: displayResult.ok && hostResult.ok,
+        displayQueryOk: displayResult.ok,
+        hostQueryOk: hostResult.ok,
+    };
 }
 
 function saveMonitors(settings, list, preferredMonitor = null) {
@@ -616,11 +643,16 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 detectNowButton.sensitive = false;
                 autoDetectionStatusRow.subtitle = _('Detecting current connections…');
 
-                let detected = null;
+                let detection = null;
                 try {
-                    detected = await detectAutoConnectedInputsAsync();
+                    detection = await detectAutoConnectedInputsAsync(loadMonitors(settings));
                 } catch (_e) {
-                    detected = null;
+                    detection = {
+                        detected: new Map(),
+                        ok: false,
+                        displayQueryOk: false,
+                        hostQueryOk: false,
+                    };
                 }
 
                 const fresh = loadMonitors(settings);
@@ -629,7 +661,7 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     if (!row)
                         continue;
 
-                    const detectedCode = detected ? normalizeVcpCode(detected.get(getMonitorIdentityKey(mon))) : '';
+                    const detectedCode = normalizeVcpCode(detection.detected.get(getMonitorIdentityKey(mon)));
                     const manualCode = normalizeVcpCode(mon.connectedInput);
                     const parts = [];
                     if (detectedCode)
@@ -641,9 +673,15 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     row.subtitle = parts.join('  •  ');
                 }
 
-                autoDetectionStatusRow.subtitle = detected
-                    ? _('Detection refreshed.')
-                    : _('Automatic detection failed. Check logs or monitor connectivity.');
+                if (!detection.ok) {
+                    autoDetectionStatusRow.subtitle = _(
+                        'Automatic detection could not query all sources. Check logs or monitor connectivity.'
+                    );
+                } else if (detection.detected.size > 0) {
+                    autoDetectionStatusRow.subtitle = _('Detection refreshed.');
+                } else {
+                    autoDetectionStatusRow.subtitle = _('No automatic matches found.');
+                }
                 detectNowButton.sensitive = true;
             };
 
