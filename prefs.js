@@ -1,8 +1,22 @@
 /* prefs.js - Preferences dialog for Display Switcher */
 import Adw from 'gi://Adw';
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+
+const DISPLAY_CONFIG_XML = `<node>
+    <interface name="org.gnome.Mutter.DisplayConfig">
+        <method name="GetCurrentState">
+            <arg name="serial" direction="out" type="u" />
+            <arg name="monitors" direction="out" type="a((ssss)a(siiddada{sv})a{sv})" />
+            <arg name="logical_monitors" direction="out" type="a(iiduba(ssss)a{sv})" />
+            <arg name="properties" direction="out" type="a{sv}" />
+        </method>
+    </interface>
+</node>`;
+const DisplayConfigProxy = Gio.DBusProxy.makeProxyWrapper(DISPLAY_CONFIG_XML);
 
 function normalizePosition(value) {
     let position = String(value || '').toLowerCase();
@@ -115,6 +129,238 @@ function loadMonitors(settings) {
     return sanitizeMonitors(loadMonitorsRaw(settings));
 }
 
+function runCommand(argv, timeoutMs = 5000) {
+    return new Promise(resolve => {
+        let finished = false;
+        let timeoutId = 0;
+        let proc = null;
+
+        const finish = result => {
+            if (finished)
+                return;
+            finished = true;
+            if (timeoutId) {
+                try {
+                    GLib.source_remove(timeoutId);
+                } catch (_e) {
+                    // ignore
+                }
+                timeoutId = 0;
+            }
+            resolve(result);
+        };
+
+        try {
+            proc = Gio.Subprocess.new(
+                argv,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            );
+        } catch (_e) {
+            finish({ok: false, stdout: '', stderr: '', status: -1});
+            return;
+        }
+
+        proc.communicate_utf8_async(null, null, (p, res) => {
+            try {
+                const [ok, stdout, stderr] = p.communicate_utf8_finish(res);
+                const success = ok && p.get_successful();
+                finish({
+                    ok: !!success,
+                    stdout: stdout || '',
+                    stderr: stderr || '',
+                    status: success ? 0 : 1,
+                });
+            } catch (_e) {
+                finish({ok: false, stdout: '', stderr: '', status: -3});
+            }
+        });
+
+        timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.max(100, timeoutMs | 0), () => {
+            try {
+                proc.force_exit();
+            } catch (_e) {
+                // ignore
+            }
+            finish({ok: false, stdout: '', stderr: 'timeout', status: -2});
+            return GLib.SOURCE_REMOVE;
+        });
+    });
+}
+
+function parseDetectedDisplays(text) {
+    const displays = [];
+    let current = null;
+
+    for (const rawLine of String(text || '').split('\n')) {
+        const line = rawLine.trimEnd();
+        const matchDisplay = line.match(/^Display\s+(\d+)/);
+        if (matchDisplay) {
+            if (current)
+                displays.push(current);
+            current = {id: parseInt(matchDisplay[1], 10), model: '', serial: ''};
+            continue;
+        }
+        if (!current)
+            continue;
+
+        const matchModel = line.match(/^\s*Model:\s*(.+)$/);
+        if (matchModel && !current.model) {
+            current.model = matchModel[1].trim();
+            continue;
+        }
+
+        const matchSerial = line.match(/^\s*(?:Serial number|SN):\s*(.+)$/);
+        if (matchSerial && !current.serial)
+            current.serial = matchSerial[1].trim();
+    }
+
+    if (current)
+        displays.push(current);
+    return displays;
+}
+
+async function detectDisplaysAsync() {
+    let result = await runCommand(['ddcutil', 'detect'], 5000);
+    let displays = parseDetectedDisplays(result.stdout);
+    if (result.ok && displays.length > 0)
+        return displays;
+
+    result = await runCommand(['ddcutil', 'detect', '--terse'], 5000);
+    if (!result.ok)
+        return [];
+
+    const terseDisplays = [];
+    for (const line of String(result.stdout || '').split('\n')) {
+        const matchDisplay = line.match(/^Display\s+(\d+)/);
+        if (matchDisplay)
+            terseDisplays.push({id: parseInt(matchDisplay[1], 10), model: '', serial: ''});
+    }
+    return terseDisplays;
+}
+
+function getHostMonitorKey(connector, vendor, product, serial) {
+    return [
+        String(connector || ''),
+        String(vendor || ''),
+        String(product || ''),
+        String(serial || ''),
+    ].join('\u0000');
+}
+
+function normalizeDisplayName(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function connectorToAutoInputCode(connector) {
+    const value = String(connector || '').trim().toLowerCase();
+    if (value.startsWith('hdmi'))
+        return '0x11';
+    if (value.startsWith('usb-c') || value.startsWith('usbc') || value.includes('type-c'))
+        return '0x1b';
+    if (value.startsWith('dp') || value.startsWith('displayport') || value.startsWith('display-port'))
+        return '0x0f';
+    return '';
+}
+
+function extractActiveHostMonitors(monitors, logicalMonitors) {
+    const monitorsByKey = new Map();
+    for (const monitor of monitors) {
+        const [monitorSpecs, _modes, props] = monitor;
+        const [connector, vendor, product, serial] = monitorSpecs;
+        let displayName = '';
+        if (props && props['display-name'])
+            displayName = String(props['display-name'].unpack() || '');
+        monitorsByKey.set(
+            getHostMonitorKey(connector, vendor, product, serial),
+            {connector, vendor, product, serial, displayName}
+        );
+    }
+
+    const active = [];
+    const seen = new Set();
+    for (const logicalMonitor of logicalMonitors) {
+        const monitorsSpecs = logicalMonitor[5] || [];
+        for (const monitorSpecs of monitorsSpecs) {
+            const [connector, vendor, product, serial] = monitorSpecs;
+            const key = getHostMonitorKey(connector, vendor, product, serial);
+            if (seen.has(key))
+                continue;
+            seen.add(key);
+            const monitor = monitorsByKey.get(key);
+            if (monitor)
+                active.push(monitor);
+        }
+    }
+
+    return active;
+}
+
+async function loadActiveHostMonitorsAsync() {
+    return new Promise(resolve => {
+        let proxy = null;
+        try {
+            proxy = new DisplayConfigProxy(
+                Gio.DBus.session,
+                'org.gnome.Mutter.DisplayConfig',
+                '/org/gnome/Mutter/DisplayConfig'
+            );
+        } catch (_e) {
+            resolve([]);
+            return;
+        }
+
+        proxy.GetCurrentStateRemote((result, err) => {
+            if (err) {
+                resolve([]);
+                return;
+            }
+
+            try {
+                const [, monitors, logicalMonitors] = result;
+                resolve(extractActiveHostMonitors(monitors, logicalMonitors));
+            } catch (_e) {
+                resolve([]);
+            }
+        });
+    });
+}
+
+function findAutoConnectedInput(display, activeHostMonitors) {
+    if (!display || !Array.isArray(activeHostMonitors) || activeHostMonitors.length === 0)
+        return '';
+
+    const serial = normalizeSerial(display.serial);
+    if (serial) {
+        const serialMatches = activeHostMonitors.filter(m => normalizeSerial(m.serial) === serial);
+        if (serialMatches.length === 1)
+            return connectorToAutoInputCode(serialMatches[0].connector);
+    }
+
+    const model = normalizeDisplayName(display.model || '');
+    if (model) {
+        const modelMatches = activeHostMonitors.filter(m => normalizeDisplayName(m.displayName) === model);
+        if (modelMatches.length === 1)
+            return connectorToAutoInputCode(modelMatches[0].connector);
+    }
+
+    return '';
+}
+
+async function detectAutoConnectedInputsAsync() {
+    const [displays, activeHostMonitors] = await Promise.all([
+        detectDisplaysAsync(),
+        loadActiveHostMonitorsAsync(),
+    ]);
+
+    const detected = new Map();
+    for (const display of displays) {
+        const inputCode = findAutoConnectedInput(display, activeHostMonitors);
+        if (inputCode)
+            detected.set(getMonitorIdentityKey(display), inputCode);
+    }
+    return detected;
+}
+
 function saveMonitors(settings, list, preferredMonitor = null) {
     try {
         const sanitized = sanitizeMonitors(list, preferredMonitor);
@@ -127,7 +373,7 @@ function saveMonitors(settings, list, preferredMonitor = null) {
 
 export default class DisplaySwitcherPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
-        window.set_default_size(520, 460);
+        window.set_default_size(720, 640);
         const settings = this.getSettings();
         const version = String(this.metadata.version ?? _('Unknown'));
         const INPUT_CODES = ['0x11', '0x0f', '0x1b'];
@@ -163,10 +409,26 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 description: _('Mark which monitor input is physically connected to this computer. The menu shows that input with a plug marker.'),
             });
             page.add(connectionGroup);
+            const autoDetectionGroup = new Adw.PreferencesGroup({
+                title: _('Auto Detection'),
+                description: _('Test what the automatic connected-input detection currently sees without changing saved settings.'),
+            });
+            page.add(autoDetectionGroup);
 
             // Build a row per monitor with inline ID, position dropdown, and usable inputs dropdown
             // Order for position: Unknown, Left, Center, Right
             const options = [_('Unknown'), _('Left'), _('Center'), _('Right')];
+            const autoDetectionRows = new Map();
+            const autoDetectionStatusRow = new Adw.ActionRow({
+                title: _('Automatic Detection'),
+                subtitle: _('Press Detect Now to test automatic cable detection.'),
+            });
+            const detectNowButton = new Gtk.Button({
+                label: _('Detect Now'),
+                valign: Gtk.Align.CENTER,
+            });
+            autoDetectionStatusRow.add_suffix(detectNowButton);
+            autoDetectionGroup.add(autoDetectionStatusRow);
 
             for (const mon of monitors) {
                 const row = new Adw.ActionRow();
@@ -340,7 +602,54 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
 
                 connectionRow.add_suffix(connectionDrop);
                 connectionGroup.add(connectionRow);
+
+                const autoDetectionRow = new Adw.ActionRow({
+                    title,
+                    subtitle: _('No automatic match yet'),
+                    activatable: false,
+                });
+                autoDetectionRows.set(getMonitorIdentityKey(mon), autoDetectionRow);
+                autoDetectionGroup.add(autoDetectionRow);
             }
+
+            const updateAutoDetectionRows = async () => {
+                detectNowButton.sensitive = false;
+                autoDetectionStatusRow.subtitle = _('Detecting current connections…');
+
+                let detected = null;
+                try {
+                    detected = await detectAutoConnectedInputsAsync();
+                } catch (_e) {
+                    detected = null;
+                }
+
+                const fresh = loadMonitors(settings);
+                for (const mon of fresh) {
+                    const row = autoDetectionRows.get(getMonitorIdentityKey(mon));
+                    if (!row)
+                        continue;
+
+                    const detectedCode = detected ? normalizeVcpCode(detected.get(getMonitorIdentityKey(mon))) : '';
+                    const manualCode = normalizeVcpCode(mon.connectedInput);
+                    const parts = [];
+                    if (detectedCode)
+                        parts.push(_('Detected automatically: ') + (INPUT_LABELS.get(detectedCode) || detectedCode));
+                    else
+                        parts.push(_('Detected automatically: Not detected'));
+                    if (manualCode)
+                        parts.push(_('Manual override: ') + (INPUT_LABELS.get(manualCode) || manualCode));
+                    row.subtitle = parts.join('  •  ');
+                }
+
+                autoDetectionStatusRow.subtitle = detected
+                    ? _('Detection refreshed.')
+                    : _('Automatic detection failed. Check logs or monitor connectivity.');
+                detectNowButton.sensitive = true;
+            };
+
+            detectNowButton.connect('clicked', () => {
+                void updateAutoDetectionRows();
+            });
         }
 
         const aboutGroup = new Adw.PreferencesGroup({ title: _('About') });
