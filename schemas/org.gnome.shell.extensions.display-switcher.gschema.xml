@@ -12,6 +12,14 @@
         The extension reads and writes all monitor state from this key.
       </description>
     </key>
+    <key name="show-identify-overlays" type="b">
+      <default>false</default>
+      <summary>Show identify overlays</summary>
+      <description>
+        Whether the extension should keep numbered display-identification overlays visible
+        until they are toggled off from preferences.
+      </description>
+    </key>
   </schema>
   
 </schemalist>
