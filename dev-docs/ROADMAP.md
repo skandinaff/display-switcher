@@ -15,9 +15,9 @@ This roadmap tracks completed work and upcoming features.
 - Preferences window shows the extension version.
 - Preferences can mark which input is physically connected to this computer, and the menu shows that input with a plug marker.
 - Automatic connected-input marker fallback uses Mutter display state asynchronously and keeps the manual setting as an override.
+- Menu and preferences display a readable monitor identity using serial when available, with a DDC fallback, and the menu can show numbered on-screen identify overlays.
 
 ## Next: Usable Inputs (per monitor)
-- Add display identifier
 - Schema/state: extend monitor records with `usableInputs: string[]` storing VCP input codes (e.g., `['0x11','0x0f','0x1b']`). Default when absent: all inputs usable.
 - Preferences UI: per-monitor checkboxes for HDMI‑1, DisplayPort‑1, and USB‑C that persist to `usableInputs`.
 - Indicator behavior: gray out and disable non‑usable inputs; ignore clicks on them. Do not show a selection ornament on disabled items.

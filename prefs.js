@@ -129,6 +129,62 @@ function loadMonitors(settings) {
     return sanitizeMonitors(loadMonitorsRaw(settings));
 }
 
+function getDisplayDdcLabel(monitor) {
+    if (typeof monitor?.id === 'number')
+        return `DDC ${monitor.id}`;
+    return '';
+}
+
+function getDisplayDdcSubtitle(monitor) {
+    const label = getDisplayDdcLabel(monitor);
+    return label ? _('DDC ID: ') + label.replace('DDC ', '') : '';
+}
+
+function getAutoDetectionIdentitySubtitle(monitor) {
+    const parts = [];
+    const ddcSubtitle = getDisplayDdcSubtitle(monitor);
+    if (ddcSubtitle)
+        parts.push(ddcSubtitle);
+    const serial = normalizeSerial(monitor?.serial);
+    if (serial)
+        parts.push(_('SN: ') + serial);
+    return parts.join('  •  ');
+}
+
+function appendSubtitlePart(parts, value) {
+    if (value)
+        parts.push(value);
+}
+
+function buildIdentifyToggleLabel(enabled) {
+    return enabled ? _('Hide') : _('Show');
+}
+
+function updateIdentifyToggleButton(button, settings) {
+    button.label = buildIdentifyToggleLabel(settings.get_boolean('show-identify-overlays'));
+}
+
+function toggleIdentifyOverlays(settings) {
+    settings.set_boolean('show-identify-overlays', !settings.get_boolean('show-identify-overlays'));
+}
+
+function getMonitorSortRank(position) {
+    if (position === 'left')
+        return 0;
+    if (position === 'center')
+        return 1;
+    if (position === 'right')
+        return 2;
+    return 3;
+}
+
+function sortMonitorsForDisplay(monitors) {
+    return [...monitors].sort((a, b) => {
+        return (getMonitorSortRank(a.position) - getMonitorSortRank(b.position)) ||
+            (a.id - b.id);
+    });
+}
+
 function runCommand(argv, timeoutMs = 5000) {
     return new Promise(resolve => {
         let finished = false;
@@ -431,6 +487,25 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             emptyRow.add_prefix(icon);
             monitorsGroup.add(emptyRow);
         } else {
+            monitors = sortMonitorsForDisplay(monitors);
+            const identifyDisplaysRow = new Adw.ActionRow({
+                title: _('Identify Displays'),
+                subtitle: _('Show persistent on-screen number overlays until you turn them off.'),
+            });
+            const identifyDisplaysButton = new Gtk.Button({
+                label: buildIdentifyToggleLabel(settings.get_boolean('show-identify-overlays')),
+                valign: Gtk.Align.CENTER,
+            });
+            settings.connect('changed::show-identify-overlays', () => {
+                updateIdentifyToggleButton(identifyDisplaysButton, settings);
+            });
+            identifyDisplaysButton.connect('clicked', () => {
+                toggleIdentifyOverlays(settings);
+                updateIdentifyToggleButton(identifyDisplaysButton, settings);
+            });
+            identifyDisplaysRow.add_suffix(identifyDisplaysButton);
+            monitorsGroup.add(identifyDisplaysRow);
+
             const connectionGroup = new Adw.PreferencesGroup({
                 title: _('This Computer'),
                 description: _('Mark which monitor input is physically connected to this computer. The menu shows that input with a plug marker.'),
@@ -457,16 +532,13 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
             autoDetectionStatusRow.add_suffix(detectNowButton);
             autoDetectionGroup.add(autoDetectionStatusRow);
 
-            for (const mon of monitors) {
+            for (const [index, mon] of monitors.entries()) {
                 const row = new Adw.ActionRow();
 
                 const title = mon.model && mon.model.length > 0 ? mon.model : `${_('Display')} ${mon.id}`;
-                row.title = title;
-                const subtitleBits = [];
-                if (mon.serial && mon.serial.length > 0)
-                    subtitleBits.push(_('Serial: ') + mon.serial);
-                subtitleBits.push(_('ID: ') + String(mon.id));
-                row.subtitle = subtitleBits.join('  •  ');
+                const numberedTitle = `${index + 1}. ${title}`;
+                row.title = numberedTitle;
+                row.subtitle = getDisplayDdcSubtitle(mon);
 
                 const strList = new Gtk.StringList();
                 for (const o of options)
@@ -584,8 +656,8 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 monitorsGroup.add(row);
 
                 const connectionRow = new Adw.ActionRow({
-                    title,
-                    subtitle: _('This computer is connected via'),
+                    title: numberedTitle,
+                    subtitle: `${_('This computer is connected via')}  •  ${getDisplayDdcSubtitle(mon)}`,
                 });
                 const connectionOptions = new Gtk.StringList();
                 for (const option of CONNECTED_OPTIONS)
@@ -631,8 +703,8 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 connectionGroup.add(connectionRow);
 
                 const autoDetectionRow = new Adw.ActionRow({
-                    title,
-                    subtitle: _('No automatic match yet'),
+                    title: numberedTitle,
+                    subtitle: getAutoDetectionIdentitySubtitle(mon) || _('No automatic match yet'),
                     activatable: false,
                 });
                 autoDetectionRows.set(getMonitorIdentityKey(mon), autoDetectionRow);
@@ -664,12 +736,13 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                     const detectedCode = normalizeVcpCode(detection.detected.get(getMonitorIdentityKey(mon)));
                     const manualCode = normalizeVcpCode(mon.connectedInput);
                     const parts = [];
+                    appendSubtitlePart(parts, getAutoDetectionIdentitySubtitle(mon));
                     if (detectedCode)
-                        parts.push(_('Detected automatically: ') + (INPUT_LABELS.get(detectedCode) || detectedCode));
+                        appendSubtitlePart(parts, _('Detected automatically: ') + (INPUT_LABELS.get(detectedCode) || detectedCode));
                     else
-                        parts.push(_('Detected automatically: Not detected'));
+                        appendSubtitlePart(parts, _('Detected automatically: Not detected'));
                     if (manualCode)
-                        parts.push(_('Manual override: ') + (INPUT_LABELS.get(manualCode) || manualCode));
+                        appendSubtitlePart(parts, _('Manual override: ') + (INPUT_LABELS.get(manualCode) || manualCode));
                     row.subtitle = parts.join('  •  ');
                 }
 

@@ -20,6 +20,7 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -33,6 +34,7 @@ const ACTIVE_INPUT_REFRESH_STALE_MS = 15000;
 const MONITOR_CHANGE_RESCAN_DELAY_MS = 1500;
 const CONNECTED_INPUT_MARKER = '  🔌';
 const AUTO_CONNECTED_INPUT_REFRESH_DELAY_MS = 250;
+const IDENTIFY_OVERLAY_TIMEOUT_MS = 2500;
 const DISPLAY_CONFIG_XML = `<node>
     <interface name="org.gnome.Mutter.DisplayConfig">
         <method name="GetCurrentState">
@@ -78,6 +80,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._displayConfigSignalId = 0;
         this._autoConnectionRefreshInFlight = false;
         this._autoConnectionRefreshQueued = false;
+        this._identifyOverlayTimeoutId = 0;
+        this._identifyOverlayActors = [];
+        this._identifyOverlaySettingsChangedId = 0;
 
         if (this._settings)
             this._sanitizeStoredMonitorRecords();
@@ -89,6 +94,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._settingsChangedId = this._settings.connect('changed::monitors', () => {
                 this._relabelDisplays();
                 this._buildMenu();
+                this._syncIdentifyOverlaysFromSettings();
+            });
+            this._identifyOverlaySettingsChangedId = this._settings.connect('changed::show-identify-overlays', () => {
+                this._syncIdentifyOverlaysFromSettings();
             });
         }
         this._menuOpenChangedId = this.menu.connect('open-state-changed', (_menu, isOpen) => {
@@ -99,6 +108,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._scheduleDisplayRefresh();
         });
         this._buildMenu();
+        this._syncIdentifyOverlaysFromSettings();
         this._maybeRefreshActiveInputs(true);
     }
 
@@ -130,6 +140,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._untrackSource(this._menuRebuildIdleId);
             this._menuRebuildIdleId = 0;
         }
+        if (this._identifyOverlayTimeoutId) {
+            try { GLib.source_remove(this._identifyOverlayTimeoutId); } catch (_e) {}
+            this._untrackSource(this._identifyOverlayTimeoutId);
+            this._identifyOverlayTimeoutId = 0;
+        }
+        this._clearIdentifyOverlays();
         if (this._displayConfigProxy && this._displayConfigSignalId) {
             try { this._displayConfigProxy.disconnectSignal(this._displayConfigSignalId); } catch (_e) {}
             this._displayConfigSignalId = 0;
@@ -142,6 +158,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         if (this._menuOpenChangedId) {
             try { this.menu.disconnect(this._menuOpenChangedId); } catch (_e) {}
             this._menuOpenChangedId = 0;
+        }
+        if (this._settings && this._identifyOverlaySettingsChangedId) {
+            try { this._settings.disconnect(this._identifyOverlaySettingsChangedId); } catch (_e) {}
+            this._identifyOverlaySettingsChangedId = 0;
         }
         if (this._monitorsChangedId) {
             try { Main.layoutManager.disconnect(this._monitorsChangedId); } catch (_e) {}
@@ -177,6 +197,38 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         return this._normalizeVcpCode(display.connectedInput) || this._normalizeVcpCode(display.autoConnectedInput);
     }
 
+    _getDisplayMenuTitle(display) {
+        const baseName = display?.model || `${_('Display')} ${display?.id ?? ''}`.trim();
+        const ddcId = (typeof display?.id === 'number') ? ` ${display.id}` : '';
+        let positionSuffix = '';
+        if (display?.position === 'left')
+            positionSuffix = ` (${_('Left')})`;
+        else if (display?.position === 'center')
+            positionSuffix = ` (${_('Center')})`;
+        else if (display?.position === 'right')
+            positionSuffix = ` (${_('Right')})`;
+        return `${baseName}${ddcId}${positionSuffix}`.trim();
+    }
+
+    _getDisplaySortRank(position) {
+        if (position === 'left')
+            return 0;
+        if (position === 'center')
+            return 1;
+        if (position === 'right')
+            return 2;
+        return 3;
+    }
+
+    _getSortedDisplays() {
+        const list = [...this._displays];
+        list.sort((a, b) => {
+            return (this._getDisplaySortRank(a.position) - this._getDisplaySortRank(b.position)) ||
+                (a.id - b.id);
+        });
+        return list;
+    }
+
     _buildMenu() {
         this._clearMenu();
         this._inputItemsByDisplay.clear();
@@ -185,13 +237,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._relabelDisplays();
 
         // Per-display submenus
-        const list = [...this._displays];
-        // Sort: left -> center -> right -> unknown, then by id
-        const rank = p => (p === 'left' ? 0 : (p === 'center' ? 1 : (p === 'right' ? 2 : 3)));
-        list.sort((a, b) => (rank(a.position) - rank(b.position)) || (a.id - b.id));
+        const list = this._getSortedDisplays();
 
         for (const d of list) {
-            const label = d.label || `${_('Display')} ${d.id}`;
+            const label = this._getDisplayMenuTitle(d);
             const sub = new PopupMenu.PopupSubMenuMenuItem(label);
             // Build input options and wire up dynamic checkmarks based on persisted last input
             const items = new Map();
@@ -223,6 +272,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         // Rescan displays and open settings
         if (this._displays.length > 0)
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        if (this._displays.length > 0) {
+            this.menu.addAction(_('Identify Displays'), () => {
+                this._showIdentifyOverlays(this._isPersistentIdentifyEnabled());
+            });
+        }
         this.menu.addAction(_('Rescan Displays'), () => {
             this._refreshDisplays(true);
         });
@@ -343,6 +397,109 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._trackSource(this._menuRebuildIdleId);
     }
 
+    _isPersistentIdentifyEnabled() {
+        try {
+            return !!(this._settings && this._settings.get_boolean('show-identify-overlays'));
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    _syncIdentifyOverlaysFromSettings() {
+        if (this._isPersistentIdentifyEnabled())
+            this._showIdentifyOverlays(true);
+        else
+            this._clearIdentifyOverlaysAndTimeout();
+    }
+
+    _clearIdentifyOverlaysAndTimeout() {
+        if (this._identifyOverlayTimeoutId) {
+            try { GLib.source_remove(this._identifyOverlayTimeoutId); } catch (_e) {}
+            this._untrackSource(this._identifyOverlayTimeoutId);
+            this._identifyOverlayTimeoutId = 0;
+        }
+        this._clearIdentifyOverlays();
+    }
+
+    _showIdentifyOverlays(persistent = false) {
+        if (!Array.isArray(this._displays) || this._displays.length === 0)
+            return;
+
+        this._clearIdentifyOverlaysAndTimeout();
+
+        const list = this._getSortedDisplays();
+        for (const display of list) {
+            const actor = this._createIdentifyOverlayActor(display);
+            if (!actor)
+                continue;
+            this._identifyOverlayActors.push(actor);
+            Main.uiGroup.add_child(actor);
+        }
+
+        if (this._identifyOverlayActors.length === 0)
+            return;
+
+        if (persistent)
+            return;
+
+        this._identifyOverlayTimeoutId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            IDENTIFY_OVERLAY_TIMEOUT_MS,
+            () => {
+                this._untrackSource(this._identifyOverlayTimeoutId);
+                this._identifyOverlayTimeoutId = 0;
+                this._clearIdentifyOverlays();
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+        this._trackSource(this._identifyOverlayTimeoutId);
+    }
+
+    _clearIdentifyOverlays() {
+        for (const actor of this._identifyOverlayActors) {
+            try {
+                actor.destroy();
+            } catch (_e) {
+                // ignore
+            }
+        }
+        this._identifyOverlayActors = [];
+    }
+
+    _createIdentifyOverlayActor(display) {
+        const monitorGeometry = this._findDisplayMonitorGeometry(display);
+        if (!monitorGeometry)
+            return null;
+
+        const label = new St.Label({
+            text: String(display.id),
+            y_align: Clutter.ActorAlign.CENTER,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: white; font-size: 72px; font-weight: 700;',
+        });
+        const overlay = new St.Bin({
+            child: label,
+            width: 140,
+            height: 140,
+            x: Math.round(monitorGeometry.x + (monitorGeometry.width - 140) / 2),
+            y: Math.round(monitorGeometry.y + monitorGeometry.height * 0.18),
+            reactive: false,
+            can_focus: false,
+            style: 'background-color: rgba(221, 80, 20, 0.95); border-radius: 20px;',
+        });
+        return overlay;
+    }
+
+    _findDisplayMonitorGeometry(display) {
+        const hostMonitor = this._findMatchingActiveHostMonitor(display);
+        if (!hostMonitor)
+            return null;
+
+        return Main.layoutManager.monitors.find(monitor => {
+            return monitor.x === hostMonitor.x && monitor.y === hostMonitor.y;
+        }) || null;
+    }
+
     _clearAutoConnectedInputs() {
         this._activeHostMonitors = [];
         if (!Array.isArray(this._displays))
@@ -373,6 +530,8 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         const active = [];
         const seen = new Set();
         for (const logicalMonitor of logicalMonitors) {
+            const x = logicalMonitor[0];
+            const y = logicalMonitor[1];
             const monitorsSpecs = logicalMonitor[5] || [];
             for (const monitorSpecs of monitorsSpecs) {
                 const [connector, vendor, product, serial] = monitorSpecs;
@@ -382,7 +541,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 seen.add(key);
                 const monitor = monitorsByKey.get(key);
                 if (monitor)
-                    active.push(monitor);
+                    active.push({...monitor, x, y});
             }
         }
 
@@ -414,24 +573,29 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     }
 
     _findAutoConnectedInput(display) {
+        const monitor = this._findMatchingActiveHostMonitor(display);
+        return monitor ? this._connectorToAutoInputCode(monitor.connector) : '';
+    }
+
+    _findMatchingActiveHostMonitor(display) {
         if (!display || !Array.isArray(this._activeHostMonitors) || this._activeHostMonitors.length === 0)
-            return '';
+            return null;
 
         const serial = this._normalizeSerial(display.serial);
         if (serial) {
             const serialMatches = this._activeHostMonitors.filter(m => this._normalizeSerial(m.serial) === serial);
             if (serialMatches.length === 1)
-                return this._connectorToAutoInputCode(serialMatches[0].connector);
+                return serialMatches[0];
         }
 
         const model = this._normalizeDisplayName(display.model || display.labelBase || display.label || '');
         if (model) {
             const modelMatches = this._activeHostMonitors.filter(m => this._normalizeDisplayName(m.displayName) === model);
             if (modelMatches.length === 1)
-                return this._connectorToAutoInputCode(modelMatches[0].connector);
+                return modelMatches[0];
         }
 
-        return '';
+        return null;
     }
 
     _applyAutoConnectedInputs(displays) {
@@ -861,6 +1025,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _refreshDisplays(forceInputRefresh = false) {
         this._displays = this._detectDisplays();
         this._buildMenu();
+        this._syncIdentifyOverlaysFromSettings();
         this._scheduleAutoConnectedInputRefresh();
         if (forceInputRefresh)
             this._maybeRefreshActiveInputs(true);
