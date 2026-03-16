@@ -7,8 +7,9 @@
       <description>
         Canonical list of monitors as JSON strings with fields: id, model, serial,
         position (one of 'left'|'center'|'right' or empty), lastInput (e.g. '0x11'),
+        connectedInput (optional VCP input code physically connected to this computer),
         and usableInputs (optional array of VCP input codes, e.g. ['0x11','0x0f','0x1b']).
-        The extension reads and writes all state from this key.
+        The extension reads and writes all monitor state from this key.
       </description>
     </key>
   </schema>

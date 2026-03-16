@@ -13,9 +13,10 @@ This roadmap tracks completed work and upcoming features.
 - Persistence of per-display state in `monitors` key (position, lastInput).
 - Menu structure refined per display with detection and relabeling by position.
 - Preferences window shows the extension version.
+- Preferences can mark which input is physically connected to this computer, and the menu shows that input with a plug marker.
+- Automatic connected-input marker fallback uses Mutter display state asynchronously and keeps the manual setting as an override.
 
 ## Next: Usable Inputs (per monitor)
-- Add marker of currently connected display
 - Add display identifier
 - Schema/state: extend monitor records with `usableInputs: string[]` storing VCP input codes (e.g., `['0x11','0x0f','0x1b']`). Default when absent: all inputs usable.
 - Preferences UI: per-monitor checkboxes for HDMI‑1, DisplayPort‑1, and USB‑C that persist to `usableInputs`.

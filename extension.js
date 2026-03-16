@@ -31,6 +31,20 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
 const ACTIVE_INPUT_REFRESH_STALE_MS = 15000;
 const MONITOR_CHANGE_RESCAN_DELAY_MS = 1500;
+const CONNECTED_INPUT_MARKER = '  🔌';
+const AUTO_CONNECTED_INPUT_REFRESH_DELAY_MS = 250;
+const DISPLAY_CONFIG_XML = `<node>
+    <interface name="org.gnome.Mutter.DisplayConfig">
+        <method name="GetCurrentState">
+            <arg name="serial" direction="out" type="u" />
+            <arg name="monitors" direction="out" type="a((ssss)a(siiddada{sv})a{sv})" />
+            <arg name="logical_monitors" direction="out" type="a(iiduba(ssss)a{sv})" />
+            <arg name="properties" direction="out" type="a{sv}" />
+        </method>
+        <signal name="MonitorsChanged" />
+    </interface>
+</node>`;
+const DisplayConfigProxy = Gio.DBusProxy.makeProxyWrapper(DISPLAY_CONFIG_XML);
 
 // Simple indicator with a menu for switching inputs via ddcutil
 const DisplaySwitchIndicator = GObject.registerClass(
@@ -57,10 +71,18 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._lastActiveInputRefreshUsec = 0;
         this._activeInputRefreshPromise = null;
         this._displayRefreshTimeoutId = 0;
+        this._autoConnectionRefreshTimeoutId = 0;
+        this._menuRebuildIdleId = 0;
+        this._activeHostMonitors = [];
+        this._displayConfigProxy = null;
+        this._displayConfigSignalId = 0;
+        this._autoConnectionRefreshInFlight = false;
+        this._autoConnectionRefreshQueued = false;
 
         if (this._settings)
             this._sanitizeStoredMonitorRecords();
 
+        this._initDisplayConfig();
         this._displays = this._detectDisplays();
         if (this._settings) {
             // React to updates in consolidated monitor records
@@ -98,6 +120,21 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             this._untrackSource(this._displayRefreshTimeoutId);
             this._displayRefreshTimeoutId = 0;
         }
+        if (this._autoConnectionRefreshTimeoutId) {
+            try { GLib.source_remove(this._autoConnectionRefreshTimeoutId); } catch (_e) {}
+            this._untrackSource(this._autoConnectionRefreshTimeoutId);
+            this._autoConnectionRefreshTimeoutId = 0;
+        }
+        if (this._menuRebuildIdleId) {
+            try { GLib.source_remove(this._menuRebuildIdleId); } catch (_e) {}
+            this._untrackSource(this._menuRebuildIdleId);
+            this._menuRebuildIdleId = 0;
+        }
+        if (this._displayConfigProxy && this._displayConfigSignalId) {
+            try { this._displayConfigProxy.disconnectSignal(this._displayConfigSignalId); } catch (_e) {}
+            this._displayConfigSignalId = 0;
+        }
+        this._displayConfigProxy = null;
         if (this._settings && this._settingsChangedId) {
             try { this._settings.disconnect(this._settingsChangedId); } catch (_e) {}
             this._settingsChangedId = 0;
@@ -115,6 +152,29 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
     _clearMenu() {
         this.menu.removeAll();
+    }
+
+    _getInputLabel(code) {
+        const norm = this._normalizeVcpCode(code);
+        if (norm === '0x11')
+            return _('HDMI');
+        if (norm === '0x0f')
+            return _('DP');
+        if (norm === '0x1b')
+            return _('USB-C');
+        return String(code || '');
+    }
+
+    _getInputMenuLabel(display, code) {
+        const label = this._getInputLabel(code);
+        const connectedInput = display ? this._getEffectiveConnectedInput(display) : '';
+        return connectedInput === this._normalizeVcpCode(code) ? `${label}${CONNECTED_INPUT_MARKER}` : label;
+    }
+
+    _getEffectiveConnectedInput(display) {
+        if (!display)
+            return '';
+        return this._normalizeVcpCode(display.connectedInput) || this._normalizeVcpCode(display.autoConnectedInput);
     }
 
     _buildMenu() {
@@ -136,17 +196,17 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             // Build input options and wire up dynamic checkmarks based on persisted last input
             const items = new Map();
 
-            const itemHdmi = new PopupMenu.PopupMenuItem(_('HDMI'));
+            const itemHdmi = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x11'));
             itemHdmi.connect('activate', () => this._switchOne('0x11', d.id));
             sub.menu.addMenuItem(itemHdmi);
             items.set('0x11', itemHdmi);
 
-            const itemDp = new PopupMenu.PopupMenuItem(_('DP'));
+            const itemDp = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x0f'));
             itemDp.connect('activate', () => this._switchOne('0x0f', d.id));
             sub.menu.addMenuItem(itemDp);
             items.set('0x0f', itemDp);
 
-            const itemUsbC = new PopupMenu.PopupMenuItem(_('USB-C'));
+            const itemUsbC = new PopupMenu.PopupMenuItem(this._getInputMenuLabel(d, '0x1b'));
             itemUsbC.connect('activate', () => this._switchOne('0x1b', d.id));
             sub.menu.addMenuItem(itemUsbC);
             items.set('0x1b', itemUsbC);
@@ -195,6 +255,202 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         } catch (_e) {
             // Ignore failures; the optimistic UI state will be corrected on refresh.
         }
+    }
+
+    _initDisplayConfig() {
+        try {
+            this._displayConfigProxy = new DisplayConfigProxy(
+                Gio.DBus.session,
+                'org.gnome.Mutter.DisplayConfig',
+                '/org/gnome/Mutter/DisplayConfig'
+            );
+            this._displayConfigSignalId = this._displayConfigProxy.connectSignal('MonitorsChanged', () => {
+                this._scheduleAutoConnectedInputRefresh();
+            });
+            this._scheduleAutoConnectedInputRefresh(true);
+        } catch (_e) {
+            this._displayConfigProxy = null;
+            this._displayConfigSignalId = 0;
+        }
+    }
+
+    _scheduleAutoConnectedInputRefresh(immediate = false) {
+        if (!this._displayConfigProxy)
+            return;
+        if (this._autoConnectionRefreshTimeoutId) {
+            try { GLib.source_remove(this._autoConnectionRefreshTimeoutId); } catch (_e) {}
+            this._untrackSource(this._autoConnectionRefreshTimeoutId);
+            this._autoConnectionRefreshTimeoutId = 0;
+        }
+        const delay = immediate ? 0 : AUTO_CONNECTED_INPUT_REFRESH_DELAY_MS;
+        this._autoConnectionRefreshTimeoutId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            delay,
+            () => {
+                this._untrackSource(this._autoConnectionRefreshTimeoutId);
+                this._autoConnectionRefreshTimeoutId = 0;
+                this._refreshAutoConnectedInputs();
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+        this._trackSource(this._autoConnectionRefreshTimeoutId);
+    }
+
+    _refreshAutoConnectedInputs() {
+        if (!this._displayConfigProxy)
+            return;
+        if (this._autoConnectionRefreshInFlight) {
+            this._autoConnectionRefreshQueued = true;
+            return;
+        }
+
+        this._autoConnectionRefreshInFlight = true;
+        this._displayConfigProxy.GetCurrentStateRemote((result, err) => {
+            if (!this._displayConfigProxy)
+                return;
+            this._autoConnectionRefreshInFlight = false;
+            if (err) {
+                if (this._clearAutoConnectedInputs())
+                    this._queueMenuRebuild();
+            } else {
+                try {
+                    const [, monitors, logicalMonitors] = result;
+                    this._activeHostMonitors = this._extractActiveHostMonitors(monitors, logicalMonitors);
+                    if (this._applyAutoConnectedInputs(this._displays))
+                        this._queueMenuRebuild();
+                } catch (_e) {
+                    if (this._clearAutoConnectedInputs())
+                        this._queueMenuRebuild();
+                }
+            }
+
+            if (this._autoConnectionRefreshQueued) {
+                this._autoConnectionRefreshQueued = false;
+                this._scheduleAutoConnectedInputRefresh(true);
+            }
+        });
+    }
+
+    _queueMenuRebuild() {
+        if (this._menuRebuildIdleId)
+            return;
+        this._menuRebuildIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._untrackSource(this._menuRebuildIdleId);
+            this._menuRebuildIdleId = 0;
+            this._buildMenu();
+            return GLib.SOURCE_REMOVE;
+        });
+        this._trackSource(this._menuRebuildIdleId);
+    }
+
+    _clearAutoConnectedInputs() {
+        this._activeHostMonitors = [];
+        if (!Array.isArray(this._displays))
+            return false;
+
+        let changed = false;
+        for (const display of this._displays) {
+            if (this._normalizeVcpCode(display.autoConnectedInput)) {
+                delete display.autoConnectedInput;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    _extractActiveHostMonitors(monitors, logicalMonitors) {
+        const monitorsByKey = new Map();
+        for (const monitor of monitors) {
+            const [monitorSpecs, _modes, props] = monitor;
+            const [connector, vendor, product, serial] = monitorSpecs;
+            let displayName = '';
+            if (props && props['display-name'])
+                displayName = String(props['display-name'].unpack() || '');
+            const key = this._getHostMonitorKey(connector, vendor, product, serial);
+            monitorsByKey.set(key, {connector, vendor, product, serial, displayName});
+        }
+
+        const active = [];
+        const seen = new Set();
+        for (const logicalMonitor of logicalMonitors) {
+            const monitorsSpecs = logicalMonitor[5] || [];
+            for (const monitorSpecs of monitorsSpecs) {
+                const [connector, vendor, product, serial] = monitorSpecs;
+                const key = this._getHostMonitorKey(connector, vendor, product, serial);
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                const monitor = monitorsByKey.get(key);
+                if (monitor)
+                    active.push(monitor);
+            }
+        }
+
+        return active;
+    }
+
+    _getHostMonitorKey(connector, vendor, product, serial) {
+        return [
+            String(connector || ''),
+            String(vendor || ''),
+            String(product || ''),
+            String(serial || ''),
+        ].join('\u0000');
+    }
+
+    _normalizeDisplayName(value) {
+        return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    _connectorToAutoInputCode(connector) {
+        const value = String(connector || '').trim().toLowerCase();
+        if (value.startsWith('hdmi'))
+            return '0x11';
+        if (value.startsWith('usb-c') || value.startsWith('usbc') || value.includes('type-c'))
+            return '0x1b';
+        if (value.startsWith('dp') || value.startsWith('displayport') || value.startsWith('display-port'))
+            return '0x0f';
+        return '';
+    }
+
+    _findAutoConnectedInput(display) {
+        if (!display || !Array.isArray(this._activeHostMonitors) || this._activeHostMonitors.length === 0)
+            return '';
+
+        const serial = this._normalizeSerial(display.serial);
+        if (serial) {
+            const serialMatches = this._activeHostMonitors.filter(m => this._normalizeSerial(m.serial) === serial);
+            if (serialMatches.length === 1)
+                return this._connectorToAutoInputCode(serialMatches[0].connector);
+        }
+
+        const model = this._normalizeDisplayName(display.model || display.labelBase || display.label || '');
+        if (model) {
+            const modelMatches = this._activeHostMonitors.filter(m => this._normalizeDisplayName(m.displayName) === model);
+            if (modelMatches.length === 1)
+                return this._connectorToAutoInputCode(modelMatches[0].connector);
+        }
+
+        return '';
+    }
+
+    _applyAutoConnectedInputs(displays) {
+        if (!Array.isArray(displays))
+            return false;
+
+        let changed = false;
+        for (const display of displays) {
+            const previous = this._normalizeVcpCode(display.autoConnectedInput);
+            const next = this._findAutoConnectedInput(display);
+            if (next) {
+                display.autoConnectedInput = next;
+            } else {
+                delete display.autoConnectedInput;
+            }
+            if (previous !== next)
+                changed = true;
+        }
+        return changed;
     }
 
     _detectDisplays() {
@@ -277,6 +533,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
 
             // Hydrate position + lastInput from consolidated records and persist
             this._hydrateFromRecords(displays);
+            this._applyAutoConnectedInputs(displays);
             this._persistMonitors(displays);
 
             return displays;
@@ -490,6 +747,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             const next = {...record};
             next.position = this._normalizePosition(next.position);
             next.lastInput = this._normalizeVcpCode(next.lastInput);
+            next.connectedInput = this._normalizeVcpCode(next.connectedInput);
             if (Array.isArray(next.usableInputs)) {
                 next.usableInputs = next.usableInputs
                     .map(v => this._normalizeVcpCode(v))
@@ -603,6 +861,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _refreshDisplays(forceInputRefresh = false) {
         this._displays = this._detectDisplays();
         this._buildMenu();
+        this._scheduleAutoConnectedInputRefresh();
         if (forceInputRefresh)
             this._maybeRefreshActiveInputs(true);
     }
@@ -622,6 +881,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             return;
         // Re-apply position labels based on current monitors records
         this._hydrateFromRecords(this._displays);
+        this._applyAutoConnectedInputs(this._displays);
     }
 
     _persistMonitors(displays) {
@@ -640,6 +900,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     serial: d.serial || '',
                     position: this._normalizePosition(d.position) || this._normalizePosition(prev.position),
                     lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
+                    connectedInput: (typeof d.connectedInput !== 'undefined' && d.connectedInput !== null && String(d.connectedInput)) || prev.connectedInput || '',
                     usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
@@ -665,6 +926,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 const li = rec.lastInput;
                 if (li)
                     d.lastInput = String(li).toLowerCase();
+                const connectedInput = this._normalizeVcpCode(rec.connectedInput);
+                if (connectedInput)
+                    d.connectedInput = connectedInput;
+                else
+                    delete d.connectedInput;
                 if (Array.isArray(rec.usableInputs)) {
                     d.usableInputs = rec.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v);
                 }
@@ -686,6 +952,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 serial: id.serial || '',
                 position: this._normalizePosition(id.position),
                 lastInput: '',
+                connectedInput: this._normalizeVcpCode(id.connectedInput),
                 usableInputs: Array.isArray(id.usableInputs)
                     ? id.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v)
                     : undefined,
