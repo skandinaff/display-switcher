@@ -5,10 +5,15 @@ Switch monitor input sources directly from the GNOME top bar using `ddcutil` (VC
 ## Features
 - Panel indicator with quick menu
 - Per‑display or all‑displays switching
-- Parses monitor Model and Serial (when available)
-- Auto‑disambiguates identical models (e.g., “DELL P2721Q (1)”, “(2)”) 
-- Persists detected monitors to settings (optional schema)
+- Current input detection via `ddcutil getvcp 60`
+- Per‑display state persisted in settings
 - Preferences dialog to assign monitors as Left/Center/Right
+- Custom per-input labels for other connected devices (for example `WS`, `MBP`, or emoji)
+- Manual or automatic marking of the input connected to this computer
+- Customizable marker for “This computer”
+- Readable display identifiers using DDC ID
+- On-screen display identification overlays
+- Per-display usable input selection in preferences
 - Rescan displays without reloading the extension
 - Translatable labels via gettext
 
@@ -59,15 +64,23 @@ If you do want to install manually without the build targets, the installed fold
 
 ## Usage
 - Click the panel icon and choose an input for a specific display or all displays.
+- Use “Identify Displays” in preferences to show persistent numbered overlays on your monitors.
 - Use “Rescan Displays” if you connect or power‑cycle monitors.
 
-Labels use the monitor model from `ddcutil detect` if present. If two or more displays report the same model, they are enumerated “(1)”, “(2)”, etc. Serial number is read when available and stored in settings if the schema is compiled.
+Menu entries use the monitor model from `ddcutil detect` when available and append the DDC display number for easier identification. Input rows can also show:
+- a customizable marker for the input connected to this computer
+- short custom labels for other connected devices
 
-## Preferences (Position assignment)
+## Preferences
 - Open the Extensions app, select Display Switch, and click Preferences.
+- Use “Identify Displays” to toggle persistent numbered overlays on screen.
 - Assign each detected monitor to “Left”, “Center”, or “Right” (or keep “Unknown”).
-- The menu annotates labels with the assignment and sorts Left → Center → Right → Unknown.
-- Assignments are stored by serial number when available; otherwise by model+id.
+- Restrict each monitor to only the inputs you actually use.
+- Mark which input is physically connected to this computer.
+- Add short labels for HDMI / DP / USB-C inputs to identify other connected devices.
+- In “Auto Detection”, test automatic host-input detection and customize the marker used for this computer.
+
+The menu sorts monitors Left → Center → Right → Unknown and stores assignments by serial number when available, otherwise by model+id.
 
 VCP values used:
 - HDMI‑1: `0x11`
@@ -79,7 +92,7 @@ You can extend these mappings in `extension.js` if your monitor uses different i
 ## Security & Permissions
 - Spawns the `ddcutil` process unprivileged; no `pkexec` or elevated privileges are used.
 - No clipboard access, telemetry, or network access.
-- No long‑running main loop sources are created.
+- GLib timeouts and signal handlers are bounded and cleaned up on disable.
 
 ## Compatibility
 - Declared support: GNOME Shell 46.

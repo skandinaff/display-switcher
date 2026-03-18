@@ -50,7 +50,18 @@ cp "$REPO_DIR"/schemas/*.xml "$OUT_DIR/schemas/"
 sed \
     -e "s|@UUID@|$UUID|g" \
     -e "s|@NAME@|$NAME|g" \
-    -e "s|@VERSION@|$VERSION|g" \
     "$TEMPLATE" > "$OUT_DIR/metadata.json"
+
+if [ "$MODE" = "dev" ]; then
+    awk -v version="$VERSION" '
+        /"shell-version"[[:space:]]*:[[:space:]]*\[/ {
+            print $0;
+            print "  \"version\": " version ",";
+            next;
+        }
+        { print $0; }
+    ' "$OUT_DIR/metadata.json" > "$OUT_DIR/metadata.json.tmp"
+    mv "$OUT_DIR/metadata.json.tmp" "$OUT_DIR/metadata.json"
+fi
 
 glib-compile-schemas "$OUT_DIR/schemas"
