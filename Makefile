@@ -39,6 +39,7 @@ dev-pack: dev-stage
 # Rebuild, reinstall, disable the release UUID locally, and enable the dev UUID.
 dev-refresh: dev-install
 	gnome-extensions disable $(RELEASE_UUID) >/dev/null 2>&1 || true
+	gnome-extensions disable $(DEV_UUID) >/dev/null 2>&1 || true
 	gnome-extensions enable $(DEV_UUID)
 
 # Prepare a release build with the published UUID.

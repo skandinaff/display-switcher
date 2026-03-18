@@ -8,6 +8,7 @@
         Canonical list of monitors as JSON strings with fields: id, model, serial,
         position (one of 'left'|'center'|'right' or empty), lastInput (e.g. '0x11'),
         connectedInput (optional VCP input code physically connected to this computer),
+        inputLabels (optional object keyed by VCP code, e.g. {"0x11":"WS","0x0f":"MBP"}),
         and usableInputs (optional array of VCP input codes, e.g. ['0x11','0x0f','0x1b']).
         The extension reads and writes all monitor state from this key.
       </description>
@@ -18,6 +19,14 @@
       <description>
         Whether the extension should keep numbered display-identification overlays visible
         until they are toggled off from preferences.
+      </description>
+    </key>
+    <key name="this-computer-marker" type="s">
+      <default>'🔌'</default>
+      <summary>This computer marker</summary>
+      <description>
+        Marker shown next to the input that is connected to this computer, whether selected
+        manually or detected automatically.
       </description>
     </key>
   </schema>

@@ -41,6 +41,51 @@ function normalizeSerial(value) {
     return String(value || '').trim();
 }
 
+function truncateGraphemes(value, limit = 3) {
+    const text = String(value || '').trim();
+    if (!text)
+        return '';
+
+    const max = Math.max(1, limit | 0);
+    const Segmenter = globalThis.Intl?.Segmenter;
+    if (!Segmenter)
+        return Array.from(text).slice(0, max).join('');
+
+    const segmenter = new Segmenter(undefined, {granularity: 'grapheme'});
+    let out = '';
+    let count = 0;
+    for (const {segment} of segmenter.segment(text)) {
+        if (count >= max)
+            break;
+        out += segment;
+        count += 1;
+    }
+    return out;
+}
+
+function normalizeInputMarker(value) {
+    return truncateGraphemes(value, 3);
+}
+
+function normalizeSingleMarker(value, fallback = '🔌') {
+    const marker = truncateGraphemes(value, 1);
+    return marker || fallback;
+}
+
+function normalizeInputLabels(labels) {
+    if (!labels || typeof labels !== 'object')
+        return undefined;
+
+    const next = {};
+    for (const [rawCode, rawMarker] of Object.entries(labels)) {
+        const code = normalizeVcpCode(rawCode);
+        const marker = normalizeInputMarker(rawMarker);
+        if (code && marker)
+            next[code] = marker;
+    }
+    return Object.keys(next).length > 0 ? next : undefined;
+}
+
 function getMonitorIdentityKey(monitor) {
     if (!monitor)
         return '';
@@ -95,6 +140,7 @@ function sanitizeMonitors(list, preferredMonitor = null) {
         next.position = normalizePosition(next.position);
         next.lastInput = normalizeVcpCode(next.lastInput);
         next.connectedInput = normalizeVcpCode(next.connectedInput);
+        next.inputLabels = normalizeInputLabels(next.inputLabels);
         if (Array.isArray(next.usableInputs)) {
             next.usableInputs = next.usableInputs
                 .map(value => normalizeVcpCode(value))
@@ -511,6 +557,11 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 description: _('Mark which monitor input is physically connected to this computer. The menu shows that input with a plug marker.'),
             });
             page.add(connectionGroup);
+            const inputLabelsGroup = new Adw.PreferencesGroup({
+                title: _('Input Labels'),
+                description: _('Add short markers for devices connected to each input. Use up to 3 letters or emoji.'),
+            });
+            page.add(inputLabelsGroup);
             const autoDetectionGroup = new Adw.PreferencesGroup({
                 title: _('Auto Detection'),
                 description: _('Test what the automatic connected-input detection currently sees without changing saved settings.'),
@@ -525,6 +576,32 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
                 title: _('Automatic Detection'),
                 subtitle: _('Press Detect Now to test automatic cable detection.'),
             });
+            const thisComputerMarkerRow = new Adw.ActionRow({
+                title: _('This Computer Marker'),
+                subtitle: _('Used when manual or automatic detection marks the input connected to this computer.'),
+            });
+            const thisComputerMarkerEntry = new Gtk.Entry({
+                width_chars: 3,
+                max_width_chars: 4,
+                valign: Gtk.Align.CENTER,
+                placeholder_text: '🔌',
+            });
+            thisComputerMarkerEntry.tooltip_text = _('Use a single emoji or symbol.');
+            thisComputerMarkerEntry.text = normalizeSingleMarker(
+                settings.get_string('this-computer-marker'),
+                '🔌'
+            );
+            thisComputerMarkerEntry.connect('changed', () => {
+                const normalizedMarker = normalizeSingleMarker(thisComputerMarkerEntry.text, '🔌');
+                if (thisComputerMarkerEntry.text !== normalizedMarker) {
+                    thisComputerMarkerEntry.text = normalizedMarker;
+                    thisComputerMarkerEntry.set_position(-1);
+                    return;
+                }
+                settings.set_string('this-computer-marker', normalizedMarker);
+            });
+            thisComputerMarkerRow.add_suffix(thisComputerMarkerEntry);
+            autoDetectionGroup.add(thisComputerMarkerRow);
             const detectNowButton = new Gtk.Button({
                 label: _('Detect Now'),
                 valign: Gtk.Align.CENTER,
@@ -701,6 +778,61 @@ export default class DisplaySwitcherPreferences extends ExtensionPreferences {
 
                 connectionRow.add_suffix(connectionDrop);
                 connectionGroup.add(connectionRow);
+
+                const labelsRow = new Adw.ActionRow({
+                    title: numberedTitle,
+                    subtitle: `${_('Labels for HDMI / DP / USB-C')}  •  ${getDisplayDdcSubtitle(mon)}`,
+                });
+                const labelsBox = new Gtk.Box({
+                    orientation: Gtk.Orientation.HORIZONTAL,
+                    spacing: 6,
+                    valign: Gtk.Align.CENTER,
+                });
+
+                const buildMarkerEntry = (code, placeholder) => {
+                    const entry = new Gtk.Entry({
+                        placeholder_text: placeholder,
+                        width_chars: 4,
+                        max_width_chars: 5,
+                        valign: Gtk.Align.CENTER,
+                    });
+                    entry.tooltip_text = _('Use up to 3 letters or emoji.');
+
+                    const fresh = loadMonitors(settings);
+                    const target = findMonitor(fresh, mon);
+                    const labels = normalizeInputLabels(target?.inputLabels) || {};
+                    entry.text = labels[code] || '';
+
+                    entry.connect('changed', () => {
+                        const normalizedMarker = normalizeInputMarker(entry.text);
+                        if (entry.text !== normalizedMarker) {
+                            entry.text = normalizedMarker;
+                            entry.set_position(-1);
+                            return;
+                        }
+
+                        const currentMonitors = loadMonitors(settings);
+                        const currentTarget = findMonitor(currentMonitors, mon);
+                        if (!currentTarget)
+                            return;
+
+                        const currentLabels = normalizeInputLabels(currentTarget.inputLabels) || {};
+                        if (normalizedMarker)
+                            currentLabels[code] = normalizedMarker;
+                        else
+                            delete currentLabels[code];
+                        currentTarget.inputLabels = Object.keys(currentLabels).length > 0 ? currentLabels : undefined;
+                        saveMonitors(settings, currentMonitors, currentTarget);
+                    });
+
+                    return entry;
+                };
+
+                labelsBox.append(buildMarkerEntry('0x11', _('HDMI')));
+                labelsBox.append(buildMarkerEntry('0x0f', _('DP')));
+                labelsBox.append(buildMarkerEntry('0x1b', _('USB-C')));
+                labelsRow.add_suffix(labelsBox);
+                inputLabelsGroup.add(labelsRow);
 
                 const autoDetectionRow = new Adw.ActionRow({
                     title: numberedTitle,

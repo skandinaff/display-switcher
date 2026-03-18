@@ -14,6 +14,7 @@ This roadmap tracks completed work and upcoming features.
 - Menu structure refined per display with detection and relabeling by position.
 - Preferences window shows the extension version.
 - Preferences can mark which input is physically connected to this computer, and the menu shows that input with a plug marker.
+- Preferences can add short per-input labels, and the menu shows them next to the corresponding input.
 - Automatic connected-input marker fallback uses Mutter display state asynchronously and keeps the manual setting as an override.
 - Menu and preferences display a readable monitor identity using serial when available, with a DDC fallback, and the menu can show numbered on-screen identify overlays.
 

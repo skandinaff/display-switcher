@@ -32,9 +32,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // 0x11 (HDMI-1), 0x0f (DisplayPort-1), 0x1b (USB-C)
 const ACTIVE_INPUT_REFRESH_STALE_MS = 15000;
 const MONITOR_CHANGE_RESCAN_DELAY_MS = 1500;
-const CONNECTED_INPUT_MARKER = '  🔌';
 const AUTO_CONNECTED_INPUT_REFRESH_DELAY_MS = 250;
 const IDENTIFY_OVERLAY_TIMEOUT_MS = 2500;
+const INPUT_CODES = ['0x11', '0x0f', '0x1b'];
 const DISPLAY_CONFIG_XML = `<node>
     <interface name="org.gnome.Mutter.DisplayConfig">
         <method name="GetCurrentState">
@@ -83,6 +83,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         this._identifyOverlayTimeoutId = 0;
         this._identifyOverlayActors = [];
         this._identifyOverlaySettingsChangedId = 0;
+        this._thisComputerMarkerSettingsChangedId = 0;
 
         if (this._settings)
             this._sanitizeStoredMonitorRecords();
@@ -98,6 +99,9 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             });
             this._identifyOverlaySettingsChangedId = this._settings.connect('changed::show-identify-overlays', () => {
                 this._syncIdentifyOverlaysFromSettings();
+            });
+            this._thisComputerMarkerSettingsChangedId = this._settings.connect('changed::this-computer-marker', () => {
+                this._buildMenu();
             });
         }
         this._menuOpenChangedId = this.menu.connect('open-state-changed', (_menu, isOpen) => {
@@ -163,6 +167,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             try { this._settings.disconnect(this._identifyOverlaySettingsChangedId); } catch (_e) {}
             this._identifyOverlaySettingsChangedId = 0;
         }
+        if (this._settings && this._thisComputerMarkerSettingsChangedId) {
+            try { this._settings.disconnect(this._thisComputerMarkerSettingsChangedId); } catch (_e) {}
+            this._thisComputerMarkerSettingsChangedId = 0;
+        }
         if (this._monitorsChangedId) {
             try { Main.layoutManager.disconnect(this._monitorsChangedId); } catch (_e) {}
             this._monitorsChangedId = 0;
@@ -188,13 +196,80 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
     _getInputMenuLabel(display, code) {
         const label = this._getInputLabel(code);
         const connectedInput = display ? this._getEffectiveConnectedInput(display) : '';
-        return connectedInput === this._normalizeVcpCode(code) ? `${label}${CONNECTED_INPUT_MARKER}` : label;
+        const decorations = [];
+        if (connectedInput === this._normalizeVcpCode(code))
+            decorations.push(this._getThisComputerMarker());
+        const marker = this._getCustomInputMarker(display, code);
+        if (marker)
+            decorations.push(marker);
+        return decorations.length > 0 ? `${label} ${decorations.join(' ')}` : label;
     }
 
     _getEffectiveConnectedInput(display) {
         if (!display)
             return '';
         return this._normalizeVcpCode(display.connectedInput) || this._normalizeVcpCode(display.autoConnectedInput);
+    }
+
+    _truncateGraphemes(value, limit = 3) {
+        const text = String(value || '').trim();
+        if (!text)
+            return '';
+
+        const max = Math.max(1, limit | 0);
+        const Segmenter = globalThis.Intl?.Segmenter;
+        if (!Segmenter)
+            return Array.from(text).slice(0, max).join('');
+
+        const segmenter = new Segmenter(undefined, {granularity: 'grapheme'});
+        let out = '';
+        let count = 0;
+        for (const {segment} of segmenter.segment(text)) {
+            if (count >= max)
+                break;
+            out += segment;
+            count += 1;
+        }
+        return out;
+    }
+
+    _normalizeInputMarker(value) {
+        return this._truncateGraphemes(value, 3);
+    }
+
+    _normalizeSingleMarker(value, fallback = '🔌') {
+        const marker = this._truncateGraphemes(value, 1);
+        return marker || fallback;
+    }
+
+    _normalizeInputLabels(labels) {
+        if (!labels || typeof labels !== 'object')
+            return undefined;
+
+        const next = {};
+        for (const [rawCode, rawMarker] of Object.entries(labels)) {
+            const code = this._normalizeVcpCode(rawCode);
+            const marker = this._normalizeInputMarker(rawMarker);
+            if (INPUT_CODES.includes(code) && marker)
+                next[code] = marker;
+        }
+        return Object.keys(next).length > 0 ? next : undefined;
+    }
+
+    _getCustomInputMarker(display, code) {
+        if (!display || !display.inputLabels || typeof display.inputLabels !== 'object')
+            return '';
+        const labels = this._normalizeInputLabels(display.inputLabels);
+        const normalizedCode = this._normalizeVcpCode(code);
+        return labels?.[normalizedCode] || '';
+    }
+
+    _getThisComputerMarker() {
+        try {
+            return this._normalizeSingleMarker(this._settings?.get_string('this-computer-marker'), '🔌');
+        } catch (_e) {
+            return '🔌';
+        }
     }
 
     _getDisplayMenuTitle(display) {
@@ -912,6 +987,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             next.position = this._normalizePosition(next.position);
             next.lastInput = this._normalizeVcpCode(next.lastInput);
             next.connectedInput = this._normalizeVcpCode(next.connectedInput);
+            next.inputLabels = this._normalizeInputLabels(next.inputLabels);
             if (Array.isArray(next.usableInputs)) {
                 next.usableInputs = next.usableInputs
                     .map(v => this._normalizeVcpCode(v))
@@ -1066,6 +1142,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     position: this._normalizePosition(d.position) || this._normalizePosition(prev.position),
                     lastInput: (typeof d.lastInput !== 'undefined' && d.lastInput !== null && String(d.lastInput)) || prev.lastInput || '',
                     connectedInput: (typeof d.connectedInput !== 'undefined' && d.connectedInput !== null && String(d.connectedInput)) || prev.connectedInput || '',
+                    inputLabels: this._normalizeInputLabels(d.inputLabels) || this._normalizeInputLabels(prev.inputLabels),
                     usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
@@ -1096,6 +1173,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     d.connectedInput = connectedInput;
                 else
                     delete d.connectedInput;
+                const inputLabels = this._normalizeInputLabels(rec.inputLabels);
+                if (inputLabels)
+                    d.inputLabels = inputLabels;
+                else
+                    delete d.inputLabels;
                 if (Array.isArray(rec.usableInputs)) {
                     d.usableInputs = rec.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v);
                 }
@@ -1118,6 +1200,7 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                 position: this._normalizePosition(id.position),
                 lastInput: '',
                 connectedInput: this._normalizeVcpCode(id.connectedInput),
+                inputLabels: this._normalizeInputLabels(id.inputLabels),
                 usableInputs: Array.isArray(id.usableInputs)
                     ? id.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v)
                     : undefined,
