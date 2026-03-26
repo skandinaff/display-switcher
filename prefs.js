@@ -41,6 +41,10 @@ function normalizeSerial(value) {
     return String(value || '').trim();
 }
 
+function normalizeDisplayName(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 function truncateGraphemes(value, limit = 3) {
     const text = String(value || '').trim();
     if (!text)
@@ -103,6 +107,12 @@ function findMonitor(list, monitor) {
         const serialMatches = list.filter(item => normalizeSerial(item.serial) === serial);
         if (serialMatches.length === 1)
             return serialMatches[0];
+    }
+    const model = normalizeDisplayName(monitor.model);
+    if (model) {
+        const modelMatches = list.filter(item => normalizeDisplayName(item?.model) === model);
+        if (modelMatches.length === 1)
+            return modelMatches[0];
     }
     return list.find(item => item && item.id === monitor.id) || null;
 }
@@ -347,10 +357,6 @@ function getHostMonitorKey(connector, vendor, product, serial) {
         String(product || ''),
         String(serial || ''),
     ].join('\u0000');
-}
-
-function normalizeDisplayName(value) {
-    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function connectorToAutoInputCode(connector) {

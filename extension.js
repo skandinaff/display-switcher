@@ -949,6 +949,12 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
             if (serialMatches.length === 1)
                 return serialMatches[0];
         }
+        const model = this._normalizeDisplayName(typeof item === 'object' ? item.model : '');
+        if (model) {
+            const modelMatches = records.filter(r => this._normalizeDisplayName(r?.model) === model);
+            if (modelMatches.length === 1)
+                return modelMatches[0];
+        }
         const id = (typeof item === 'number') ? item : item.id;
         if (typeof id !== 'number')
             return null;
@@ -1133,8 +1139,11 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
         try {
             const existing = this._loadMonitorRecords();
             const merged = [];
+            const matchedExisting = new Set();
             for (const d of displays) {
                 const prev = this._findMatchingRecord(existing, d) || {};
+                if (prev && Object.keys(prev).length > 0)
+                    matchedExisting.add(prev);
                 const rec = {
                     id: d.id,
                     model: d.model || '',
@@ -1146,6 +1155,10 @@ class DisplaySwitchIndicator extends PanelMenu.Button {
                     usableInputs: Array.isArray(d.usableInputs) ? d.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : (Array.isArray(prev.usableInputs) ? prev.usableInputs.map(v => this._normalizeVcpCode(v)).filter(v => v) : undefined),
                 };
                 merged.push(rec);
+            }
+            for (const record of existing) {
+                if (!matchedExisting.has(record))
+                    merged.push(record);
             }
             const sanitized = this._sanitizeMonitorRecords(merged);
             this._settings.set_strv('monitors', sanitized.map(r => JSON.stringify(r)));
